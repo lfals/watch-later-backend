@@ -1,0 +1,2 @@
+ALTER TABLE "reel_submissions" ADD COLUMN "work_id" uuid;--> statement-breakpoint
+ALTER TABLE "reel_submissions" ADD CONSTRAINT "reel_submissions_work_id_works_id_fk" FOREIGN KEY ("work_id") REFERENCES "public"."works"("id") ON DELETE set null ON UPDATE no action;

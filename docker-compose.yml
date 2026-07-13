@@ -1,0 +1,94 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: watch_later
+      POSTGRES_USER: watch_later
+      POSTGRES_PASSWORD: watch_later
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U watch_later"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    volumes:
+      - ./data/redis:/data
+
+  migrate:
+    build:
+      context: .
+      target: runtime
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://watch_later:watch_later@postgres:5432/watch_later
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/src/migrate.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      target: runtime
+    env_file: .env
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://watch_later:watch_later@postgres:5432/watch_later
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      target: worker-runtime
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://watch_later:watch_later@postgres:5432/watch_later
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/src/worker.js"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  admin:
+    build:
+      context: ../watch-later-admin
+      args:
+        VITE_CLERK_PUBLISHABLE_KEY: pk_test_c2FmZS1yYXZlbi05Ny5jbGVyay5hY2NvdW50cy5kZXYk
+        VITE_API_BASE_URL: http://localhost:3000
+    ports:
+      - "5173:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

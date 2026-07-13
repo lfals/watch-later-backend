@@ -1,0 +1,1 @@
+ALTER TABLE "reel_submissions" ADD COLUMN "evidence_summary" jsonb DEFAULT '{}'::jsonb NOT NULL;

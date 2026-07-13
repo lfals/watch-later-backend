@@ -1,0 +1,1 @@
+ALTER TYPE "public"."submission_status" ADD VALUE 'needs_confirmation' BEFORE 'identified';
