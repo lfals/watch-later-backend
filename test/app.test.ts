@@ -3,7 +3,7 @@ import { createApp } from "../src/app.js";
 import type { CatalogWork } from "../src/catalog.js";
 
 const movie: CatalogWork = { provider: "tmdb", type: "movie", externalId: "550", title: "Fight Club", originalTitle: "Fight Club", releaseYear: "1999", synopsis: "Test", posterUrl: null };
-const config = { PORT: 3000, DATABASE_URL: "test", REDIS_URL: "redis://localhost:6379", GEMINI_MODEL: "gemini-3.5-flash", CLERK_AUTHORIZED_PARTIES: "", ALLOW_DEV_AUTH: "true" as const, ADMIN_CLERK_USER_IDS: "", ADMIN_ORIGINS: "http://localhost:5173", SCRAPER_ENABLED: "true" as const, SCRAPER_BROWSER_FALLBACK: "true" as const, SCRAPER_YTDLP_FALLBACK: "true" as const, IDENTIFICATION_PIPELINE_VERSION: "v1", IDENTIFICATION_CACHE_TTL_DAYS: 180, TEMPORARY_MEDIA_RETENTION_DAYS: 7 };
+const config = { PORT: 3000, DATABASE_URL: "test", REDIS_URL: "redis://localhost:6379", OLLAMA_BASE_URL: "http://localhost:11434", OLLAMA_MODEL: "gemma3:4b", LOCAL_MODEL_TIMEOUT_MS: 120_000, TESSERACT_COMMAND: "tesseract", OCR_LANGUAGES: "eng", WHISPER_COMMAND: "whisper-cli", CLERK_AUTHORIZED_PARTIES: "", ALLOW_DEV_AUTH: "true" as const, ADMIN_CLERK_USER_IDS: "", ADMIN_ORIGINS: "http://localhost:5173", SCRAPER_ENABLED: "true" as const, SCRAPER_BROWSER_FALLBACK: "true" as const, SCRAPER_YTDLP_FALLBACK: "true" as const, IDENTIFICATION_PIPELINE_VERSION: "local-v1", IDENTIFICATION_CACHE_TTL_DAYS: 180, TEMPORARY_MEDIA_RETENTION_DAYS: 7 };
 
 describe("manual watchlist slice", () => {
   it("searches and saves a movie for an authenticated development user", async () => {

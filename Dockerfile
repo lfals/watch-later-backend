@@ -24,7 +24,7 @@ EXPOSE 3000
 CMD ["node", "dist/src/server.js"]
 
 FROM runtime-base AS worker-runtime
-RUN apk add --no-cache ffmpeg chromium yt-dlp
+RUN apk add --no-cache ffmpeg chromium yt-dlp tesseract-ocr tesseract-ocr-data-eng
 ENV CHROMIUM_PATH=/usr/bin/chromium-browser
 COPY --from=build --chown=watchlater:watchlater /app/package.json ./package.json
 COPY --from=build --chown=watchlater:watchlater /app/node_modules ./node_modules

@@ -5,14 +5,15 @@ Hono API and future BullMQ worker for Watch Later.
 ## Local setup
 
 1. Copy `.env.example` to `.env` and provide Clerk/TMDB credentials.
-2. Run `docker compose up -d --build`.
-3. Wait until `docker compose ps` reports the API as healthy.
+2. Start the dependencies with `docker compose up -d --build`.
+3. Download the configured local vision model once with `docker compose exec ollama ollama pull gemma3:4b`.
+4. Wait until `docker compose ps` reports the API as healthy.
 
-The Compose stack runs PostgreSQL, Redis, a one-shot database migrator, the Hono API on port 3000, and the BullMQ identification worker. API and worker secrets come from `.env` and are not copied into the image.
+The Compose stack runs PostgreSQL, Redis, Ollama, a one-shot database migrator, the Hono API on port 3000, and the BullMQ identification worker. API and worker secrets come from `.env` and are not copied into the image. Reel frames and metadata are analyzed by the local Ollama model and never sent to an LLM provider.
 
 Durable local data is stored in `data/postgres` and `data/redis`. PostgreSQL uses a bind mount and Redis uses AOF with one-second fsync plus an initial snapshot. The entire `data/` directory is ignored by Git. Worker media remains ephemeral and is deliberately excluded from persistence.
 
-For development without application containers, run `pnpm dev` and `pnpm worker:dev`. The worker requires `GEMINI_API_KEY`; `GEMINI_MODEL` defaults to `gemini-3.5-flash`.
+For development without application containers, install Ollama and Tesseract, run `ollama pull gemma3:4b`, then use `pnpm dev` and `pnpm worker:dev`. `OLLAMA_BASE_URL` and `OLLAMA_MODEL` select the local endpoint and vision model. Audio transcription is optional: install whisper.cpp and set `WHISPER_MODEL_PATH` to a local model file; without it, identification continues with frames, OCR, and metadata.
 
 For local UI development only, set `ALLOW_DEV_AUTH=true` and send `x-dev-user-id`. Production must keep it `false`.
 
@@ -39,7 +40,7 @@ Stable client errors include `invalid_reel_url`, `unsupported_url`, `invalid_can
 ## Global cache and deduplication
 
 - Valid results are cached anonymously by normalized Reel URL and pipeline version.
-- Exact SHA-256 media matches reuse an identified work across reposted URLs without calling Gemini.
+- Exact SHA-256 media matches reuse an identified work across reposted URLs without invoking the local model.
 - Entries expire after `IDENTIFICATION_CACHE_TTL_DAYS` (180 by default) and renew on every hit.
 - BullMQ coalesces concurrent submissions for the same normalized URL into one job; completion fans the result out to every waiting user.
 - Manual corrections remain personal and never overwrite the global cache.
