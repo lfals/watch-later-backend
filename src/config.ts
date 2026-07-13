@@ -9,6 +9,8 @@ const schema = z.object({
   LOCAL_MODEL_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(120_000),
   TESSERACT_COMMAND: z.string().min(1).default("tesseract"),
   OCR_LANGUAGES: z.string().min(1).default("eng"),
+  OCR_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(5_000),
+  OCR_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(2),
   WHISPER_COMMAND: z.string().min(1).default("whisper-cli"),
   WHISPER_MODEL_PATH: z.string().optional(),
   CLERK_JWT_KEY: z.string().optional(),

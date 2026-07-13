@@ -31,6 +31,8 @@ const pipeline = new IdentificationPipeline(
     requestTimeoutMs: config.LOCAL_MODEL_TIMEOUT_MS,
     tesseractCommand: config.TESSERACT_COMMAND,
     ocrLanguages: config.OCR_LANGUAGES,
+    ocrTimeoutMs: config.OCR_TIMEOUT_MS,
+    ocrConcurrency: config.OCR_CONCURRENCY,
     whisperCommand: config.WHISPER_COMMAND,
     whisperModelPath: config.WHISPER_MODEL_PATH,
   }),

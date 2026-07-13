@@ -38,9 +38,20 @@ export type LocalIdentifierOptions = {
   requestTimeoutMs?: number;
   tesseractCommand?: string;
   ocrLanguages?: string;
+  ocrTimeoutMs?: number;
+  ocrConcurrency?: number;
   whisperCommand?: string;
   whisperModelPath?: string;
+  commandRunner?: CommandRunner;
 };
+
+type CommandRunner = (
+  command: string,
+  args: string[],
+  options: { timeout: number; maxBuffer: number; killSignal?: NodeJS.Signals; encoding: "utf8" },
+) => Promise<{ stdout: string }>;
+
+type OcrResult = { text: string; failureReason?: string };
 
 export class LocalIdentifier implements Identifier {
   constructor(private readonly options: LocalIdentifierOptions) {}
@@ -49,10 +60,18 @@ export class LocalIdentifier implements Identifier {
     const frames = (evidence.artifacts ?? []).filter((artifact) => artifact.kind === "frame").slice(0, 8);
     const audio = (evidence.artifacts ?? []).find((artifact) => artifact.kind === "audio");
     const [ocrResults, transcript] = await Promise.all([
-      Promise.all(frames.map((frame) => this.readFrameText(frame))),
+      mapWithConcurrency(frames, this.options.ocrConcurrency ?? 2, (frame) => this.readFrameText(frame)),
       audio ? this.transcribe(audio) : Promise.resolve(null),
     ]);
-    const onScreenText = [...new Set(ocrResults.flatMap(splitUsefulLines))].slice(0, 20);
+    const failedOcr = ocrResults.filter((result) => result.failureReason);
+    if (failedOcr.length) {
+      logEvent("local_identifier.ocr_partial", {
+        failedFrameCount: failedOcr.length,
+        totalFrameCount: frames.length,
+        reasons: [...new Set(failedOcr.map((result) => result.failureReason))].join(","),
+      });
+    }
+    const onScreenText = [...new Set(ocrResults.flatMap((result) => splitUsefulLines(result.text)))].slice(0, 20);
     const images = await Promise.all(frames.map(async (frame) => (await readFile(frame.path)).toString("base64")));
 
     if (!images.length && !onScreenText.length && !transcript && !evidence.title && !evidence.description) {
@@ -95,34 +114,33 @@ Local transcript: ${JSON.stringify(transcript)}`;
     };
   }
 
-  private async readFrameText(frame: ReelArtifact): Promise<string> {
+  private async readFrameText(frame: ReelArtifact): Promise<OcrResult> {
     try {
-      const { stdout } = await execFileAsync(this.options.tesseractCommand ?? "tesseract", [
+      const { stdout } = await this.runCommand(this.options.tesseractCommand ?? "tesseract", [
         frame.path,
         "stdout",
         "-l",
         this.options.ocrLanguages ?? "eng",
         "--psm",
         "11",
-      ], { timeout: 20_000, maxBuffer: 512 * 1024 });
-      return stdout.trim();
+      ], { timeout: this.options.ocrTimeoutMs ?? 5_000, maxBuffer: 512 * 1024, killSignal: "SIGKILL", encoding: "utf8" });
+      return { text: stdout.trim() };
     } catch (error) {
-      logEvent("local_identifier.ocr_unavailable", { reason: safeErrorReason(error) });
-      return "";
+      return { text: "", failureReason: commandFailureReason(error) };
     }
   }
 
   private async transcribe(audio: ReelArtifact): Promise<string | null> {
     if (!this.options.whisperModelPath) return null;
     try {
-      const { stdout } = await execFileAsync(this.options.whisperCommand ?? "whisper-cli", [
+      const { stdout } = await this.runCommand(this.options.whisperCommand ?? "whisper-cli", [
         "-m",
         this.options.whisperModelPath,
         "-f",
         audio.path,
         "-nt",
         "-np",
-      ], { timeout: 120_000, maxBuffer: 2 * 1024 * 1024 });
+      ], { timeout: 120_000, maxBuffer: 2 * 1024 * 1024, killSignal: "SIGKILL", encoding: "utf8" });
       const transcript = stdout.replace(/\[[\d:.\s>\-]+\]/g, " ").replace(/\s+/g, " ").trim();
       return transcript || null;
     } catch (error) {
@@ -130,6 +148,10 @@ Local transcript: ${JSON.stringify(transcript)}`;
       return null;
     }
   }
+
+  private runCommand: CommandRunner = (command, args, options) => this.options.commandRunner
+    ? this.options.commandRunner(command, args, options)
+    : execFileAsync(command, args, options);
 }
 
 const splitUsefulLines = (value: string) => value
@@ -147,3 +169,24 @@ const verifiedTranscriptExcerpt = (transcript: string | null, excerpt?: string |
 const safeErrorReason = (error: unknown) => error instanceof Error
   ? error.message.slice(0, 160)
   : "unknown";
+
+const commandFailureReason = (error: unknown) => {
+  const details = error as { killed?: boolean; signal?: string; code?: string | number };
+  if (details?.killed || details?.signal) return "timeout";
+  if (details?.code === "ENOENT") return "command_not_found";
+  if (details?.code !== undefined) return `exit_${details.code}`;
+  return error instanceof Error ? error.name : "unknown";
+};
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, map: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await map(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, worker));
+  return results;
+}
