@@ -4,14 +4,14 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { loadConfig } from "./config.js";
 import { DrizzlePipelineStore } from "./pipeline-store.js";
-import { CatalogWorkResolver, cleanupExpiredTemporaryEvidence, IdentificationPipeline, PublicInstagramScraper } from "./pipeline.js";
-import { LocalIdentifier } from "./local-identifier.js";
+import { CatalogWorkResolver, cleanupExpiredTemporaryEvidence, GeminiIdentifier, IdentificationPipeline, PublicInstagramScraper } from "./pipeline.js";
 import { logError, logEvent } from "./logger.js";
 import { AniListCatalog, CompositeCatalog, TmdbCatalog } from "./catalog.js";
 import { databaseLogSink } from "./admin.js";
 import { configureLogSink } from "./logger.js";
 
 const config = loadConfig();
+if (!config.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is required to run the worker");
 if (!config.TMDB_API_TOKEN) throw new Error("TMDB_API_TOKEN is required to run the worker");
 const db = drizzle(new Pool({ connectionString: config.DATABASE_URL }));
 configureLogSink(databaseLogSink(db));
@@ -25,17 +25,7 @@ const scraper = config.SCRAPER_ENABLED === "true"
 const pipeline = new IdentificationPipeline(
   new DrizzlePipelineStore(db, config.IDENTIFICATION_PIPELINE_VERSION, config.IDENTIFICATION_CACHE_TTL_DAYS),
   scraper,
-  new LocalIdentifier({
-    baseUrl: config.OLLAMA_BASE_URL,
-    model: config.OLLAMA_MODEL,
-    requestTimeoutMs: config.LOCAL_MODEL_TIMEOUT_MS,
-    tesseractCommand: config.TESSERACT_COMMAND,
-    ocrLanguages: config.OCR_LANGUAGES,
-    ocrTimeoutMs: config.OCR_TIMEOUT_MS,
-    ocrConcurrency: config.OCR_CONCURRENCY,
-    whisperCommand: config.WHISPER_COMMAND,
-    whisperModelPath: config.WHISPER_MODEL_PATH,
-  }),
+  new GeminiIdentifier(config.GEMINI_API_KEY, config.GEMINI_MODEL),
   new CatalogWorkResolver(catalog),
 );
 const temporaryMediaRetentionMs = config.TEMPORARY_MEDIA_RETENTION_DAYS * 24 * 60 * 60 * 1_000;

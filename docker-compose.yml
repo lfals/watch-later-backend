@@ -27,16 +27,6 @@ services:
     volumes:
       - ./data/redis:/data
 
-  ollama:
-    image: ollama/ollama:latest
-    volumes:
-      - ./data/ollama:/root/.ollama
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-
   migrate:
     build:
       context: .
@@ -82,14 +72,11 @@ services:
     environment:
       DATABASE_URL: postgres://watch_later:watch_later@postgres:5432/watch_later
       REDIS_URL: redis://redis:6379
-      OLLAMA_BASE_URL: http://ollama:11434
     command: ["node", "dist/src/worker.js"]
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     restart: unless-stopped
 
