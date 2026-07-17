@@ -3,13 +3,18 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { adminAuditLogs, dailyQuotaUsage, identificationCache, operationalLogs, quotaSettings, reelSubmissions, submissionArtifacts, userQuotaOverrides, users, works } from "./db/schema.js";
 import { quotaWindowDate } from "./quota.js";
 import type { LogRecord } from "./logger.js";
+import type { ArtifactStorage } from "./artifact-storage.js";
 
 export type AdminLogQuery = {
   level?: "info" | "error"; event?: string; submissionId?: string; before?: Date; limit: number;
 };
 
 export class AdminStore {
-  constructor(private readonly db: NodePgDatabase, private readonly bootstrapAdmins: Set<string>) {}
+  constructor(
+    private readonly db: NodePgDatabase,
+    private readonly bootstrapAdmins: Set<string>,
+    private readonly artifactStorage?: ArtifactStorage,
+  ) {}
 
   async role(clerkUserId: string) {
     if (this.bootstrapAdmins.has(clerkUserId)) {
@@ -64,6 +69,11 @@ export class AdminStore {
   async artifact(id: string) {
     const [artifact] = await this.db.select().from(submissionArtifacts).where(and(eq(submissionArtifacts.id, id), gte(submissionArtifacts.expiresAt, new Date())));
     if (!artifact) throw new Error("artifact_not_found");
+    if (artifact.objectKey) {
+      if (!this.artifactStorage) throw new Error("artifact_storage_unavailable");
+      return { ...artifact, data: await this.artifactStorage.get(artifact.objectKey) };
+    }
+    if (!artifact.dataBase64) throw new Error("artifact_data_missing");
     return { ...artifact, data: Buffer.from(artifact.dataBase64, "base64") };
   }
 

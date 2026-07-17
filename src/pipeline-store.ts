@@ -1,13 +1,21 @@
 import { and, eq, gt, lt } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { externalWorkIds, identificationCache, reelSubmissions, submissionArtifacts, watchlistEntries, works } from "./db/schema.js";
 import type { Identification, PipelineStore, ReelArtifact, ReelMedia } from "./pipeline.js";
 import type { CatalogWork } from "./catalog.js";
 import { refundTechnicalFailure } from "./quota.js";
+import type { ArtifactStorage } from "./artifact-storage.js";
 
 export class DrizzlePipelineStore implements PipelineStore {
-  constructor(private readonly db: NodePgDatabase, private readonly pipelineVersion = "v1", private readonly cacheTtlDays = 180) {}
+  constructor(
+    private readonly db: NodePgDatabase,
+    private readonly pipelineVersion = "v1",
+    private readonly cacheTtlDays = 180,
+    private readonly artifactStorage?: ArtifactStorage,
+    private readonly artifactRetentionDays = 7,
+  ) {}
   private async submission(id: string) {
     const [item] = await this.db.select().from(reelSubmissions).where(eq(reelSubmissions.id, id));
     if (!item) throw new Error("submission_not_found");
@@ -68,14 +76,33 @@ export class DrizzlePipelineStore implements PipelineStore {
   }
 
   async saveEvidenceArtifacts(id: string, artifacts: Array<ReelArtifact | (ReelMedia & { kind: "video" })>) {
+    const now = new Date();
+    const stale = await this.db.select({ objectKey: submissionArtifacts.objectKey }).from(submissionArtifacts)
+      .where(lt(submissionArtifacts.expiresAt, now));
+    const replaced = await this.db.select({ objectKey: submissionArtifacts.objectKey }).from(submissionArtifacts)
+      .where(eq(submissionArtifacts.submissionId, id));
+    await this.artifactStorage?.delete([...stale, ...replaced].flatMap((item) => item.objectKey ? [item.objectKey] : []));
     await this.db.delete(submissionArtifacts).where(lt(submissionArtifacts.expiresAt, new Date()));
     await this.db.delete(submissionArtifacts).where(eq(submissionArtifacts.submissionId, id));
     if (!artifacts.length) return;
-    const expiresAt = new Date(Date.now() + 86_400_000);
-    await this.db.insert(submissionArtifacts).values(await Promise.all(artifacts.map(async (artifact) => ({
-      submissionId: id, kind: artifact.kind, mimeType: artifact.mimeType, sizeBytes: String(artifact.sizeBytes),
-      dataBase64: (await readFile(artifact.path)).toString("base64"), expiresAt,
-    }))));
+    const expiresAt = new Date(Date.now() + this.artifactRetentionDays * 86_400_000);
+    const uploadedKeys: string[] = [];
+    try {
+      await this.db.insert(submissionArtifacts).values(await Promise.all(artifacts.map(async (artifact) => {
+        const objectKey = this.artifactStorage ? `submissions/${id}/${randomUUID()}` : null;
+        if (objectKey) {
+          await this.artifactStorage!.put(objectKey, artifact.path, artifact.mimeType);
+          uploadedKeys.push(objectKey);
+        }
+        return {
+          submissionId: id, kind: artifact.kind, mimeType: artifact.mimeType, sizeBytes: String(artifact.sizeBytes),
+          dataBase64: objectKey ? null : (await readFile(artifact.path)).toString("base64"), objectKey, expiresAt,
+        };
+      })));
+    } catch (error) {
+      await this.artifactStorage?.delete(uploadedKeys).catch(() => undefined);
+      throw error;
+    }
   }
 
   async reuseCachedFingerprint(id: string, fingerprint: string) {

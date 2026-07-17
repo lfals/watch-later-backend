@@ -8,13 +8,25 @@ Hono API and future BullMQ worker for Watch Later.
 2. Run `docker compose up -d --build`.
 3. Wait until `docker compose ps` reports the API as healthy.
 
-The Compose stack runs PostgreSQL, Redis, a one-shot database migrator, the Hono API on port 3000, and the BullMQ identification worker. API and worker secrets come from `.env` and are not copied into the image.
+The Compose stack runs PostgreSQL, Redis, MinIO, a one-shot database and bucket initializer, the Hono API on port 3000, the BullMQ identification worker, Loki, and Grafana. API and worker secrets come from `.env` and are not copied into the image. The local S3 API is available on port 9000 and the MinIO console at `http://localhost:9001` (`watch_later` / `watch_later_dev_secret`).
 
-Durable local data is stored in `data/postgres` and `data/redis`. PostgreSQL uses a bind mount and Redis uses AOF with one-second fsync plus an initial snapshot. The entire `data/` directory is ignored by Git. Worker media remains ephemeral and is deliberately excluded from persistence.
+Durable local data is stored in `data/postgres`, `data/redis`, and `data/minio`. PostgreSQL uses a bind mount, Redis uses AOF with one-second fsync plus an initial snapshot, and MinIO persists the private `watch-later-media` bucket. The entire `data/` directory is ignored by Git. Worker processing files remain ephemeral; retained evidence is copied to S3.
 
 For development without application containers, run `pnpm dev` and `pnpm worker:dev`. The worker requires `GEMINI_API_KEY`; `GEMINI_MODEL` defaults to `gemini-3.5-flash`.
 
 For local UI development only, set `ALLOW_DEV_AUTH=true` and send `x-dev-user-id`. Production must keep it `false`.
+
+## API documentation
+
+The interactive Swagger UI is available at `http://localhost:3000/docs`. The OpenAPI 3.1 contract is available as JSON at `http://localhost:3000/openapi.json`. The contract documents every non-administrative endpoint; `/v1` operations accept a Clerk bearer token through Swagger's **Authorize** action.
+
+## Logs and Grafana
+
+API and worker operational logs remain structured JSON on stdout and in PostgreSQL. When `LOKI_URL` is configured, the same records are also sent to Loki with `component`, `environment`, `level`, and `service` labels. A Loki failure never interrupts the application request or job that produced the log.
+
+The Compose stack exposes Loki at `http://localhost:3100` and Grafana at `http://localhost:3001`. The local Grafana credentials default to `admin` / `watch_later_dev_secret`; override them with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env`. The Loki datasource and the **Watch Later — Logs** dashboard are provisioned automatically. Loki retains logs for seven days in the `loki-data` volume, while Grafana state is stored in `grafana-data`.
+
+Railway runs Loki and Grafana as separate services with persistent volumes mounted at `/loki` and `/var/lib/grafana`. API and worker use the private endpoint `http://loki.railway.internal:3100/loki/api/v1/push`; only Grafana receives a public domain. The production Grafana password is stored as the `GF_SECURITY_ADMIN_PASSWORD` variable on its Railway service.
 
 ## Main API flow
 

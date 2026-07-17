@@ -137,7 +137,8 @@ export const submissionArtifacts = pgTable("submission_artifacts", {
   submissionId: uuid("submission_id").notNull().references(() => reelSubmissions.id, { onDelete: "cascade" }),
   kind: text("kind").$type<"frame" | "audio" | "video">().notNull(),
   mimeType: text("mime_type").notNull(), sizeBytes: text("size_bytes").notNull(),
-  dataBase64: text("data_base64").notNull(),
+  dataBase64: text("data_base64"),
+  objectKey: text("object_key"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("submission_artifacts_submission_idx").on(table.submissionId), index("submission_artifacts_expires_idx").on(table.expiresAt)]);

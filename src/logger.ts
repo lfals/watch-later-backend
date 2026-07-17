@@ -1,8 +1,58 @@
 export type LogFields = Record<string, string | number | boolean | null | undefined>;
 export type LogRecord = { level: "info" | "error"; service: string; event: string; fields: LogFields; timestamp: Date };
-let sink: ((record: LogRecord) => Promise<void>) | undefined;
+export type LogSink = (record: LogRecord) => Promise<void>;
+let sink: LogSink | undefined;
 
-export function configureLogSink(nextSink: (record: LogRecord) => Promise<void>) { sink = nextSink; }
+export function configureLogSink(nextSink: LogSink) { sink = nextSink; }
+
+export function combineLogSinks(...sinks: Array<LogSink | undefined>): LogSink {
+  const configured = sinks.filter((item): item is LogSink => Boolean(item));
+  return async (record) => {
+    const results = await Promise.allSettled(configured.map((item) => item(record)));
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (rejected) throw rejected.reason;
+  };
+}
+
+export function lokiLogSink(options: {
+  url?: string;
+  tenantId?: string;
+  component?: string;
+  environment?: string;
+  fetch?: typeof globalThis.fetch;
+}): LogSink | undefined {
+  const url = options.url;
+  if (!url) return undefined;
+  const send = options.fetch ?? globalThis.fetch;
+  return async (record) => {
+    const line = JSON.stringify({
+      timestamp: record.timestamp.toISOString(),
+      level: record.level,
+      service: record.service,
+      event: record.event,
+      ...record.fields,
+    });
+    const response = await send(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(options.tenantId ? { "x-scope-orgid": options.tenantId } : {}),
+      },
+      body: JSON.stringify({
+        streams: [{
+          stream: {
+            service: record.service,
+            component: options.component ?? "backend",
+            environment: options.environment ?? "development",
+            level: record.level,
+          },
+          values: [[String(record.timestamp.getTime() * 1_000_000), line]],
+        }],
+      }),
+    });
+    if (!response.ok) throw new Error(`loki_push_failed:${response.status}`);
+  };
+}
 
 function persist(record: LogRecord) {
   void sink?.(record).catch((error) => console.error(JSON.stringify({

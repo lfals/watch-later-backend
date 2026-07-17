@@ -5,16 +5,23 @@ import { Pool } from "pg";
 import { loadConfig } from "./config.js";
 import { DrizzlePipelineStore } from "./pipeline-store.js";
 import { CatalogWorkResolver, cleanupExpiredTemporaryEvidence, GeminiIdentifier, IdentificationPipeline, PublicInstagramScraper } from "./pipeline.js";
-import { logError, logEvent } from "./logger.js";
+import { combineLogSinks, logError, logEvent, lokiLogSink } from "./logger.js";
 import { AniListCatalog, CompositeCatalog, TmdbCatalog } from "./catalog.js";
 import { databaseLogSink } from "./admin.js";
 import { configureLogSink } from "./logger.js";
+import { artifactStorageFromConfig } from "./artifact-storage.js";
 
 const config = loadConfig();
+const artifactStorage = artifactStorageFromConfig(config);
 if (!config.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is required to run the worker");
 if (!config.TMDB_API_TOKEN) throw new Error("TMDB_API_TOKEN is required to run the worker");
 const db = drizzle(new Pool({ connectionString: config.DATABASE_URL }));
-configureLogSink(databaseLogSink(db));
+configureLogSink(combineLogSinks(databaseLogSink(db), lokiLogSink({
+  url: config.LOKI_URL,
+  tenantId: config.LOKI_TENANT_ID,
+  component: process.env.RAILWAY_SERVICE_NAME ?? "worker",
+  environment: process.env.RAILWAY_ENVIRONMENT_NAME ?? process.env.NODE_ENV,
+})));
 const catalog = new CompositeCatalog(new TmdbCatalog(config.TMDB_API_TOKEN), new AniListCatalog());
 const scraper = config.SCRAPER_ENABLED === "true"
   ? new PublicInstagramScraper(
@@ -23,7 +30,7 @@ const scraper = config.SCRAPER_ENABLED === "true"
     )
   : { scrape: async () => { throw new Error("scraper_disabled"); } };
 const pipeline = new IdentificationPipeline(
-  new DrizzlePipelineStore(db, config.IDENTIFICATION_PIPELINE_VERSION, config.IDENTIFICATION_CACHE_TTL_DAYS),
+  new DrizzlePipelineStore(db, config.IDENTIFICATION_PIPELINE_VERSION, config.IDENTIFICATION_CACHE_TTL_DAYS, artifactStorage, config.TEMPORARY_MEDIA_RETENTION_DAYS),
   scraper,
   new GeminiIdentifier(config.GEMINI_API_KEY, config.GEMINI_MODEL),
   new CatalogWorkResolver(catalog),

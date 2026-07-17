@@ -1,11 +1,46 @@
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { CatalogWork } from "../src/catalog.js";
+import { loadConfig } from "../src/config.js";
 
 const movie: CatalogWork = { provider: "tmdb", type: "movie", externalId: "550", title: "Fight Club", originalTitle: "Fight Club", releaseYear: "1999", synopsis: "Test", posterUrl: null };
 const config = { PORT: 3000, DATABASE_URL: "test", REDIS_URL: "redis://localhost:6379", GEMINI_MODEL: "gemini-3.5-flash", CLERK_AUTHORIZED_PARTIES: "", ALLOW_DEV_AUTH: "true" as const, ADMIN_CLERK_USER_IDS: "", ADMIN_ORIGINS: "http://localhost:5173", SCRAPER_ENABLED: "true" as const, SCRAPER_BROWSER_FALLBACK: "true" as const, SCRAPER_YTDLP_FALLBACK: "true" as const, IDENTIFICATION_PIPELINE_VERSION: "v1", IDENTIFICATION_CACHE_TTL_DAYS: 180, TEMPORARY_MEDIA_RETENTION_DAYS: 7 };
 
 describe("manual watchlist slice", () => {
+  it("allows the production admin origin by default", async () => {
+    const productionConfig = loadConfig({ DATABASE_URL: "test" });
+    const app = createApp({ config: productionConfig, catalog: { searchMovies: async () => [], search: async () => [], streaming: async () => ({ region: "BR", checkedAt: "", providers: [] }) }, repository: { addMovie: async () => ({}), list: async () => [], createSubmission: async () => ({}), inbox: async () => [], addWork: async () => ({}) } });
+
+    const response = await app.request("/v1/admin/logs", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://watchlater.felps.zip",
+        "Access-Control-Request-Method": "GET",
+      },
+    });
+
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("https://watchlater.felps.zip");
+  });
+
+  it("publishes Swagger UI and documents every non-administrative endpoint", async () => {
+    const app = createApp({ config, catalog: { searchMovies: async () => [], search: async () => [], streaming: async () => ({ region: "BR", checkedAt: "", providers: [] }) }, repository: { addMovie: async () => ({}), list: async () => [], createSubmission: async () => ({}), inbox: async () => [], addWork: async () => ({}) } });
+    const docs = await app.request("/docs");
+    expect(docs.status).toBe(200);
+    expect(await docs.text()).toContain("SwaggerUIBundle");
+
+    const response = await app.request("/openapi.json");
+    expect(response.status).toBe(200);
+    const contract = await response.json() as { paths: Record<string, unknown>; components?: { securitySchemes?: Record<string, unknown> } };
+    expect(Object.keys(contract.paths)).toEqual(expect.arrayContaining([
+      "/health", "/v1/catalog/movies", "/v1/catalog/works", "/v1/catalog/streaming",
+      "/v1/watchlist/movies", "/v1/watchlist/works", "/v1/watchlist", "/v1/watchlist/{entryId}",
+      "/v1/submissions", "/v1/submissions/{submissionId}", "/v1/submissions/{submissionId}/confirm",
+      "/v1/submissions/{submissionId}/resolve", "/v1/submissions/{submissionId}/reprocess", "/v1/inbox",
+    ]));
+    expect(Object.keys(contract.paths).some((path) => path.startsWith("/v1/admin"))).toBe(false);
+    expect(contract.components?.securitySchemes).toHaveProperty("Bearer");
+  });
+
   it("searches and saves a movie for an authenticated development user", async () => {
     const saved: unknown[] = [];
     const app = createApp({ config, catalog: { searchMovies: async () => [movie], search: async () => [], streaming: async () => ({ region: "BR", checkedAt: new Date().toISOString(), providers: [] }) }, repository: {

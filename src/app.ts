@@ -8,6 +8,8 @@ import type { CatalogWork } from "./catalog.js";
 import { logError, logEvent } from "./logger.js";
 import type { AdminStore } from "./admin.js";
 import { cors } from "hono/cors";
+import { swaggerUI } from "@hono/swagger-ui";
+import { registerPublicOpenApi } from "./openapi.js";
 
 type Repository = {
   addMovie(userId: string, movie: CatalogMovie): Promise<unknown>;
@@ -34,7 +36,21 @@ export function createApp(deps: { config: Config; catalog: Catalog; repository: 
     allowHeaders: ["Authorization", "Content-Type"], allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], maxAge: 600,
   }));
   app.get("/health", (c) => c.json({ status: "ok" }));
-  app.doc("/openapi.json", { openapi: "3.1.0", info: { title: "Watch Later API", version: "0.1.0" } });
+  app.get("/docs", swaggerUI({ url: "/openapi.json", persistAuthorization: true }));
+  app.doc("/openapi.json", {
+    openapi: "3.1.0",
+    info: {
+      title: "Watch Later API",
+      version: "1.0.0",
+      description: "Public client API for catalog search, watchlist management, and Instagram Reel identification. Administrative endpoints are intentionally excluded.",
+    },
+    tags: [
+      { name: "System", description: "Service availability" },
+      { name: "Catalog", description: "Movie and series discovery" },
+      { name: "Watchlist", description: "The authenticated user's saved works" },
+      { name: "Submissions", description: "Instagram Reel identification workflow" },
+    ],
+  });
   app.use("/v1/*", authMiddleware(deps.config));
   app.use("/v1/admin/*", async (c, next) => {
     if (!deps.admin) return c.json({ error: "admin_unavailable" }, 503);
@@ -213,5 +229,6 @@ export function createApp(deps: { config: Config; catalog: Catalog; repository: 
     logError("request.failed", error, { path: c.req.path });
     return c.json({ error: "internal_error" }, 500);
   });
+  registerPublicOpenApi(app);
   return app;
 }

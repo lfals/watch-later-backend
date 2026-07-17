@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, lt, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, ne, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { externalWorkIds, identificationCache, reelSubmissions, users, watchlistEntries, works } from "./db/schema.js";
 import type { CatalogMovie, CatalogWork } from "./catalog.js";
@@ -62,7 +62,15 @@ export class WatchlistRepository {
       externalId: externalWorkIds.externalId, provider: externalWorkIds.provider, type: works.type,
       createdAt: watchlistEntries.createdAt,
     }).from(watchlistEntries).innerJoin(works, eq(works.id, watchlistEntries.workId)).leftJoin(externalWorkIds, eq(externalWorkIds.workId, works.id))
-      .where(and(...conditions)).orderBy(desc(watchlistEntries.createdAt)).limit(page.limit ?? 50);
+      .where(and(...conditions)).orderBy(
+        asc(sql`case ${watchlistEntries.status}
+          when 'watching' then 0
+          when 'want_to_watch' then 1
+          when 'watched' then 2
+          else 3
+        end`),
+        desc(watchlistEntries.createdAt),
+      ).limit(page.limit ?? 50);
   }
 
   async createSubmission(clerkUserId: string, reel: NormalizedReel) {

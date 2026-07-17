@@ -8,14 +8,21 @@ import { loadConfig } from "./config.js";
 import { WatchlistRepository } from "./repository.js";
 import { BullSubmissionQueue } from "./queue.js";
 import { AdminStore, databaseLogSink } from "./admin.js";
-import { configureLogSink } from "./logger.js";
+import { combineLogSinks, configureLogSink, lokiLogSink, logEvent } from "./logger.js";
 import { QuotaService } from "./quota.js";
 import { startQuotaReconciler } from "./quota-reconciler.js";
+import { artifactStorageFromConfig } from "./artifact-storage.js";
 
 const config = loadConfig();
+const artifactStorage = artifactStorageFromConfig(config);
 const pool = new Pool({ connectionString: config.DATABASE_URL });
 const db = drizzle(pool);
-configureLogSink(databaseLogSink(db));
+configureLogSink(combineLogSinks(databaseLogSink(db), lokiLogSink({
+  url: config.LOKI_URL,
+  tenantId: config.LOKI_TENANT_ID,
+  component: process.env.RAILWAY_SERVICE_NAME ?? "api",
+  environment: process.env.RAILWAY_ENVIRONMENT_NAME ?? process.env.NODE_ENV,
+})));
 const tmdb = config.TMDB_API_TOKEN
   ? new TmdbCatalog(config.TMDB_API_TOKEN)
   : {
@@ -27,7 +34,7 @@ const catalog = new CompositeCatalog(tmdb, new AniListCatalog());
 const queue = new BullSubmissionQueue(config.REDIS_URL);
 const app = createApp({
   config, catalog, repository: new WatchlistRepository(db, config.IDENTIFICATION_PIPELINE_VERSION, config.IDENTIFICATION_CACHE_TTL_DAYS), queue,
-  admin: new AdminStore(db, new Set(config.ADMIN_CLERK_USER_IDS.split(",").map((item) => item.trim()).filter(Boolean))),
+  admin: new AdminStore(db, new Set(config.ADMIN_CLERK_USER_IDS.split(",").map((item) => item.trim()).filter(Boolean)), artifactStorage),
 });
 startQuotaReconciler(new QuotaService(db), queue);
-serve({ fetch: app.fetch, port: config.PORT }, ({ port }) => console.log(`Watch Later API listening on :${port}`));
+serve({ fetch: app.fetch, port: config.PORT }, ({ port }) => logEvent("api.ready", { port }));
