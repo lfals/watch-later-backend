@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { lokiLogSink } from "../src/logger.js";
+import { configureLogSink, logEvent, lokiLogSink, withLogContext } from "../src/logger.js";
 
 describe("Loki log sink", () => {
   it("pushes structured logs with useful stream labels", async () => {
@@ -28,5 +28,24 @@ describe("Loki log sink", () => {
       service: "watch-later-backend", component: "worker", environment: "test", level: "error",
     });
     expect(JSON.parse(body.streams[0].values[0][1])).toMatchObject({ event: "worker.job_failed", jobId: "job-1" });
+  });
+});
+
+describe("structured log context", () => {
+  it("propagates correlation fields across asynchronous operations", async () => {
+    const records: Array<{ fields: Record<string, unknown>; event: string }> = [];
+    configureLogSink(async (record) => { records.push(record); });
+
+    await withLogContext({ requestId: "request-1", submissionId: "submission-1" }, async () => {
+      await Promise.resolve();
+      logEvent("pipeline.stage_completed", { durationMs: 42 });
+    });
+    await vi.waitFor(() => expect(records).toHaveLength(1));
+
+    expect(records[0]).toMatchObject({
+      event: "pipeline.stage_completed",
+      fields: { requestId: "request-1", submissionId: "submission-1", durationMs: 42 },
+    });
+    configureLogSink();
   });
 });

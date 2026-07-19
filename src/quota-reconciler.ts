@@ -7,12 +7,13 @@ export function startQuotaReconciler(quotas: QuotaService, queue: SubmissionQueu
   const reconcile = async () => {
     if (running) return;
     running = true;
+    const startedAt = performance.now();
     try {
       const admitted = await quotas.admitWaiting();
       for (const item of admitted) await queue.enqueue(item.id, item.normalizedUrlHash);
-      if (admitted.length) logEvent("quota.waiting_admitted", { count: admitted.length });
+      if (admitted.length) logEvent("quota.waiting_admitted", { count: admitted.length, durationMs: Math.round(performance.now() - startedAt) });
     } catch (error) {
-      logError("quota.reconcile_failed", error);
+      logError("quota.reconcile_failed", error, { durationMs: Math.round(performance.now() - startedAt) });
     } finally {
       running = false;
     }

@@ -4,30 +4,90 @@
   "panels": [
     {
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
       "id": 1,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{ "expr": "sum(count_over_time({service=\"watch-later-backend\", component=~\"$component\", level=\"error\"}[$__range]))", "queryType": "instant", "refId": "A" }],
+      "title": "Erros no período",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{ "expr": "sum(count_over_time({service=\"watch-later-backend\", component=~\"$component\"} | json | event=\"http.request_completed\" | status >= 500 [$__range]))", "queryType": "instant", "refId": "A" }],
+      "title": "Respostas HTTP 5xx",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{ "expr": "sum(count_over_time({service=\"watch-later-backend\", component=~\"$component\"} | json | event=\"pipeline.completed\" [$__range]))", "queryType": "instant", "refId": "A" }],
+      "title": "Pipelines concluídos",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{ "expr": "sum(count_over_time({service=\"watch-later-backend\", component=~\"$component\"} | json | event=\"worker.job_failed\" [$__range]))", "queryType": "instant", "refId": "A" }],
+      "title": "Jobs com falha",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "id": 5,
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
-      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "editorMode": "code", "expr": "sum by (level) (count_over_time({service=\"watch-later-backend\"}[$__auto]))", "legendFormat": "{{level}}", "queryType": "range", "refId": "A" }],
+      "targets": [{ "expr": "sum by (level) (count_over_time({service=\"watch-later-backend\", component=~\"$component\", level=~\"$level\"}[$__auto]))", "legendFormat": "{{level}}", "queryType": "range", "refId": "A" }],
       "title": "Volume de logs por nível",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 8 },
-      "id": 2,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "id": 6,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
+      "targets": [{ "expr": "sum by (status) (count_over_time({service=\"watch-later-backend\", component=~\"$component\"} | json | event=\"http.request_completed\" [$__auto]))", "legendFormat": "HTTP {{status}}", "queryType": "range", "refId": "A" }],
+      "title": "Requisições HTTP por status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 13 },
+      "id": 7,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "expr": "avg by (event) (avg_over_time({service=\"watch-later-backend\", component=~\"$component\"} | json | durationMs != \"\" | unwrap durationMs [$__auto]))", "legendFormat": "{{event}}", "queryType": "range", "refId": "A" }],
+      "title": "Duração média por etapa (ms)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 21 },
+      "id": 8,
       "options": { "dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": true, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
-      "targets": [{ "datasource": { "type": "loki", "uid": "loki" }, "editorMode": "code", "expr": "{service=\"watch-later-backend\"} | json", "queryType": "range", "refId": "A" }],
-      "title": "Logs da API e do worker",
+      "targets": [{ "expr": "{service=\"watch-later-backend\", component=~\"$component\", level=~\"$level\"} | json | event=~\"$event\"", "queryType": "range", "refId": "A" }],
+      "title": "Logs correlacionáveis da API e do worker",
       "type": "logs"
     }
   ],
   "refresh": "10s",
   "schemaVersion": 42,
-  "tags": ["watch-later", "logs"],
-  "templating": { "list": [] },
+  "tags": ["watch-later", "logs", "observability"],
+  "templating": {
+    "list": [
+      { "allValue": ".*", "current": { "text": "Todos", "value": "$__all" }, "datasource": { "type": "loki", "uid": "loki" }, "definition": "label_values({service=\"watch-later-backend\"}, component)", "includeAll": true, "label": "Componente", "name": "component", "query": "label_values({service=\"watch-later-backend\"}, component)", "refresh": 1, "type": "query" },
+      { "allValue": ".*", "current": { "text": "Todos", "value": "$__all" }, "datasource": { "type": "loki", "uid": "loki" }, "definition": "label_values({service=\"watch-later-backend\"}, level)", "includeAll": true, "label": "Nível", "name": "level", "query": "label_values({service=\"watch-later-backend\"}, level)", "refresh": 1, "type": "query" },
+      { "current": { "text": ".*", "value": ".*" }, "label": "Evento (regex)", "name": "event", "query": ".*", "type": "textbox" }
+    ]
+  },
   "time": { "from": "now-1h", "to": "now" },
   "timezone": "browser",
-  "title": "Watch Later — Logs",
+  "title": "Watch Later — Observabilidade",
   "uid": "watch-later-logs",
-  "version": 1
+  "version": 2
 }

@@ -1,9 +1,17 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 export type LogFields = Record<string, string | number | boolean | null | undefined>;
-export type LogRecord = { level: "info" | "error"; service: string; event: string; fields: LogFields; timestamp: Date };
+export type LogLevel = "info" | "warn" | "error";
+export type LogRecord = { level: LogLevel; service: string; event: string; fields: LogFields; timestamp: Date };
 export type LogSink = (record: LogRecord) => Promise<void>;
 let sink: LogSink | undefined;
+const context = new AsyncLocalStorage<LogFields>();
 
-export function configureLogSink(nextSink: LogSink) { sink = nextSink; }
+export function configureLogSink(nextSink?: LogSink) { sink = nextSink; }
+
+export function withLogContext<T>(fields: LogFields, operation: () => T): T {
+  return context.run({ ...context.getStore(), ...fields }, operation);
+}
 
 export function combineLogSinks(...sinks: Array<LogSink | undefined>): LogSink {
   const configured = sinks.filter((item): item is LogSink => Boolean(item));
@@ -61,29 +69,24 @@ function persist(record: LogRecord) {
   })));
 }
 
-export function logEvent(event: string, fields: LogFields = {}) {
-  console.info(JSON.stringify({
-    timestamp: new Date().toISOString(),
-    level: "info",
-    service: "watch-later-backend",
-    event,
-    ...fields,
-  }));
-  persist({ level: "info", service: "watch-later-backend", event, fields, timestamp: new Date() });
+function write(level: LogLevel, event: string, fields: LogFields) {
+  const timestamp = new Date();
+  const mergedFields = { ...context.getStore(), ...fields };
+  const output = JSON.stringify({ timestamp: timestamp.toISOString(), level, service: "watch-later-backend", event, ...mergedFields });
+  if (level === "error") console.error(output);
+  else if (level === "warn") console.warn(output);
+  else console.info(output);
+  persist({ level, service: "watch-later-backend", event, fields: mergedFields, timestamp });
 }
 
+export function logEvent(event: string, fields: LogFields = {}) { write("info", event, fields); }
+
+export function logWarn(event: string, fields: LogFields = {}) { write("warn", event, fields); }
+
 export function logError(event: string, error: unknown, fields: LogFields = {}) {
-  console.error(JSON.stringify({
-    timestamp: new Date().toISOString(),
-    level: "error",
-    service: "watch-later-backend",
-    event,
+  write("error", event, {
     ...fields,
     errorType: error instanceof Error ? error.name : "unknown",
-    errorCode: error instanceof Error ? error.message : "unknown_error",
-  }));
-  persist({ level: "error", service: "watch-later-backend", event, fields: {
-    ...fields, errorType: error instanceof Error ? error.name : "unknown",
-    errorCode: error instanceof Error ? error.message : "unknown_error",
-  }, timestamp: new Date() });
+    errorCode: error instanceof Error ? error.message.slice(0, 200) : "unknown_error",
+  });
 }

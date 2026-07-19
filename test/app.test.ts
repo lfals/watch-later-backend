@@ -61,6 +61,14 @@ describe("manual watchlist slice", () => {
     expect((await app.request("/v1/watchlist")).status).toBe(401);
   });
 
+  it("returns the correlation id on every request", async () => {
+    const app = createApp({ config, catalog: { searchMovies: async () => [], search: async () => [], streaming: async () => ({ region: "BR", checkedAt: "", providers: [] }) }, repository: { addMovie: async () => ({}), list: async () => [], createSubmission: async () => ({}), inbox: async () => [], addWork: async () => ({}) } });
+    const generated = await app.request("/docs");
+    expect(generated.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/);
+    const propagated = await app.request("/docs", { headers: { "x-request-id": "client-correlation-1" } });
+    expect(propagated.headers.get("x-request-id")).toBe("client-correlation-1");
+  });
+
   it("normalizes a shared Reel and rejects unsupported links", async () => {
     const app = createApp({ config, catalog: { searchMovies: async () => [], search: async () => [], streaming: async () => ({ region: "BR", checkedAt: "", providers: [] }) }, repository: {
       addMovie: async () => ({}), list: async () => [], inbox: async () => [], createSubmission: async (_user, reel) => reel, addWork: async () => ({}),

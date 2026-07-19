@@ -5,11 +5,12 @@ import { authMiddleware, type AuthVariables } from "./auth.js";
 import { normalizeInstagramReel } from "./reels.js";
 import type { SubmissionQueue } from "./queue.js";
 import type { CatalogWork } from "./catalog.js";
-import { logError, logEvent } from "./logger.js";
+import { logError, logEvent, logWarn, withLogContext } from "./logger.js";
 import type { AdminStore } from "./admin.js";
 import { cors } from "hono/cors";
 import { swaggerUI } from "@hono/swagger-ui";
 import { registerPublicOpenApi } from "./openapi.js";
+import { randomUUID } from "node:crypto";
 
 type Repository = {
   addMovie(userId: string, movie: CatalogMovie): Promise<unknown>;
@@ -31,6 +32,22 @@ const catalogWorkSchema = movieSchema.extend({ provider: z.literal("tmdb"), type
 
 export function createApp(deps: { config: Config; catalog: Catalog; repository: Repository; queue?: SubmissionQueue; admin?: Pick<AdminStore, "role" | "logs" | "submissions" | "submission" | "artifact" | "health" | "audit" | "audits" | "prepareReprocess" | "cache" | "invalidateCache" | "quotas" | "updateGlobalQuotas" | "updateUserQuotas"> }) {
   const app = new OpenAPIHono<{ Variables: AuthVariables }>();
+  app.use("*", async (c, next) => {
+    const requestId = c.req.header("x-request-id")?.slice(0, 100) || randomUUID();
+    c.header("x-request-id", requestId);
+    const path = c.req.path.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, ":id");
+    const routineProbe = path === "/health";
+    const startedAt = performance.now();
+    return withLogContext({ requestId }, async () => {
+      if (!routineProbe) logEvent("http.request_started", { method: c.req.method, path });
+      await next();
+      const fields = { method: c.req.method, path, status: c.res.status, durationMs: Math.round(performance.now() - startedAt) };
+      if (!routineProbe || c.res.status >= 400) {
+        if (c.res.status >= 400) logWarn("http.request_completed", fields);
+        else logEvent("http.request_completed", fields);
+      }
+    });
+  });
   app.use("/v1/admin/*", cors({
     origin: deps.config.ADMIN_ORIGINS.split(",").map((item) => item.trim()).filter(Boolean),
     allowHeaders: ["Authorization", "Content-Type"], allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], maxAge: 600,
@@ -61,7 +78,7 @@ export function createApp(deps: { config: Config; catalog: Catalog; repository: 
 
   app.get("/v1/admin/logs", async (c) => {
     const parsed = z.object({
-      level: z.enum(["info", "error"]).optional(), event: z.string().max(120).optional(),
+      level: z.enum(["info", "warn", "error"]).optional(), event: z.string().max(120).optional(),
       submissionId: z.string().uuid().optional(), before: z.iso.datetime().optional(),
       limit: z.coerce.number().int().min(1).max(200).default(100),
     }).safeParse(c.req.query());

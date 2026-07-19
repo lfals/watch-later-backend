@@ -6,7 +6,7 @@ import type { LogRecord } from "./logger.js";
 import type { ArtifactStorage } from "./artifact-storage.js";
 
 export type AdminLogQuery = {
-  level?: "info" | "error"; event?: string; submissionId?: string; before?: Date; limit: number;
+  level?: "info" | "warn" | "error"; event?: string; submissionId?: string; before?: Date; limit: number;
 };
 
 export class AdminStore {

@@ -5,7 +5,7 @@ import { Pool } from "pg";
 import { loadConfig } from "./config.js";
 import { DrizzlePipelineStore } from "./pipeline-store.js";
 import { CatalogWorkResolver, cleanupExpiredTemporaryEvidence, GeminiIdentifier, IdentificationPipeline, PublicInstagramScraper } from "./pipeline.js";
-import { combineLogSinks, logError, logEvent, lokiLogSink } from "./logger.js";
+import { combineLogSinks, logError, logEvent, logWarn, lokiLogSink, withLogContext } from "./logger.js";
 import { AniListCatalog, CompositeCatalog, TmdbCatalog } from "./catalog.js";
 import { databaseLogSink } from "./admin.js";
 import { configureLogSink } from "./logger.js";
@@ -15,7 +15,9 @@ const config = loadConfig();
 const artifactStorage = artifactStorageFromConfig(config);
 if (!config.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is required to run the worker");
 if (!config.TMDB_API_TOKEN) throw new Error("TMDB_API_TOKEN is required to run the worker");
-const db = drizzle(new Pool({ connectionString: config.DATABASE_URL }));
+const pool = new Pool({ connectionString: config.DATABASE_URL });
+pool.on("error", (error) => logError("database.pool_error", error, { component: "worker" }));
+const db = drizzle(pool);
 configureLogSink(combineLogSinks(databaseLogSink(db), lokiLogSink({
   url: config.LOKI_URL,
   tenantId: config.LOKI_TENANT_ID,
@@ -47,10 +49,46 @@ const sweepTemporaryEvidence = async () => {
 await sweepTemporaryEvidence();
 setInterval(sweepTemporaryEvidence, 60 * 60 * 1_000).unref();
 const redis = new URL(config.REDIS_URL);
-const worker = new Worker("identify-reel", (job) => pipeline.run(job.data.submissionId as string), {
+logEvent("worker.starting", {
+  queue: "identify-reel", concurrency: 2, scraperEnabled: config.SCRAPER_ENABLED === "true",
+  browserFallbackEnabled: config.SCRAPER_BROWSER_FALLBACK === "true", ytDlpFallbackEnabled: config.SCRAPER_YTDLP_FALLBACK === "true",
+  lokiEnabled: Boolean(config.LOKI_URL), artifactStorageEnabled: Boolean(artifactStorage), railwayDeploymentId: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
+});
+const worker = new Worker("identify-reel", (job) => withLogContext({
+  jobId: job.id ?? null, submissionId: job.data.submissionId as string, attemptNumber: job.attemptsMade + 1,
+}, async () => {
+  const startedAt = performance.now();
+  logEvent("worker.job_started", { queue: "identify-reel" });
+  try {
+    await pipeline.run(job.data.submissionId as string);
+    logEvent("worker.job_processed", { durationMs: Math.round(performance.now() - startedAt) });
+  } catch (error) {
+    logError("worker.job_processing_failed", error, { durationMs: Math.round(performance.now() - startedAt) });
+    throw error;
+  }
+}), {
   connection: { host: redis.hostname, port: Number(redis.port || 6379), password: redis.password || undefined }, concurrency: 2,
 });
 worker.on("ready", () => logEvent("worker.ready", { queue: "identify-reel", concurrency: 2 }));
 worker.on("completed", (job) => logEvent("worker.job_completed", { jobId: job.id ?? null, attemptsMade: job.attemptsMade }));
 worker.on("failed", (job, error) => logError("worker.job_failed", error, { jobId: job?.id ?? null, attemptsMade: job?.attemptsMade ?? 0 }));
+worker.on("stalled", (jobId) => logWarn("worker.job_stalled", { jobId }));
 worker.on("error", (error) => logError("worker.error", error));
+let shuttingDown = false;
+const shutdown = async (signal: string) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const startedAt = performance.now();
+  logEvent("worker.shutdown_started", { signal });
+  try {
+    await worker.close();
+    await pool.end();
+    logEvent("worker.shutdown_completed", { signal, durationMs: Math.round(performance.now() - startedAt) });
+    process.exitCode = 0;
+  } catch (error) {
+    logError("worker.shutdown_failed", error, { signal });
+    process.exitCode = 1;
+  }
+};
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));

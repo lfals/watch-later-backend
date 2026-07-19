@@ -1,6 +1,7 @@
 import { verifyToken } from "@clerk/backend";
 import type { MiddlewareHandler } from "hono";
 import type { Config } from "./config.js";
+import { logWarn } from "./logger.js";
 
 export type AuthVariables = { clerkUserId: string };
 
@@ -14,7 +15,10 @@ export function authMiddleware(config: Config): MiddlewareHandler<{ Variables: A
 
     const authorization = context.req.header("authorization");
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
-    if (!token) return context.json({ error: "unauthorized" }, 401);
+    if (!token) {
+      logWarn("auth.rejected", { reason: "missing_bearer_token" });
+      return context.json({ error: "unauthorized" }, 401);
+    }
 
     try {
       const payload = await verifyToken(token, {
@@ -25,6 +29,7 @@ export function authMiddleware(config: Config): MiddlewareHandler<{ Variables: A
       context.set("clerkUserId", payload.sub);
       return next();
     } catch {
+      logWarn("auth.rejected", { reason: "invalid_bearer_token" });
       return context.json({ error: "unauthorized" }, 401);
     }
   };
