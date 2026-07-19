@@ -136,6 +136,44 @@ describeWithDatabase("WatchlistRepository with PostgreSQL", () => {
     expect(entries[0]).toMatchObject({ title: "Fight Club", status: "want_to_watch" });
   });
 
+  it("preserves status priority and orders each group by newest addition", async () => {
+    const additions = [
+      { externalId: "order-watching-old", title: "Zulu Watching", status: "watching", createdAt: "2026-07-10T12:00:00.000Z" },
+      { externalId: "order-watching-new", title: "Alpha Watching", status: "watching", createdAt: "2026-07-11T12:00:00.000Z" },
+      { externalId: "order-wanted-old", title: "Zulu Wanted", status: "want_to_watch", createdAt: "2026-07-12T12:00:00.000Z" },
+      { externalId: "order-wanted-new", title: "Alpha Wanted", status: "want_to_watch", createdAt: "2026-07-13T12:00:00.000Z" },
+      { externalId: "order-watched-old", title: "Zulu Watched", status: "watched", createdAt: "2026-07-14T12:00:00.000Z" },
+      { externalId: "order-watched-new", title: "Alpha Watched", status: "watched", createdAt: "2026-07-15T12:00:00.000Z" },
+    ] as const;
+
+    for (const addition of additions) {
+      const entry = await repository.addWork("user_order", {
+        provider: "tmdb",
+        externalId: addition.externalId,
+        type: "movie",
+        title: addition.title,
+        originalTitle: addition.title,
+        releaseYear: "2026",
+        synopsis: null,
+        posterUrl: null,
+      });
+      await db.update(watchlistEntries).set({
+        status: addition.status,
+        createdAt: new Date(addition.createdAt),
+      }).where(eq(watchlistEntries.id, entry.entryId));
+    }
+
+    const entries = await repository.list("user_order");
+    expect(entries.map(({ title, status }) => ({ title, status }))).toEqual([
+      { title: "Alpha Watching", status: "watching" },
+      { title: "Zulu Watching", status: "watching" },
+      { title: "Alpha Wanted", status: "want_to_watch" },
+      { title: "Zulu Wanted", status: "want_to_watch" },
+      { title: "Alpha Watched", status: "watched" },
+      { title: "Zulu Watched", status: "watched" },
+    ]);
+  });
+
   it("adds a confidently identified Reel work to the user's watchlist", async () => {
     const submission = await repository.createSubmission(
       "user_integration",

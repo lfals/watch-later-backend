@@ -70,6 +70,7 @@ export class WatchlistRepository {
           else 3
         end`),
         desc(watchlistEntries.createdAt),
+        desc(watchlistEntries.id),
       ).limit(page.limit ?? 50);
   }
 
