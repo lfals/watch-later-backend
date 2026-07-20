@@ -105,6 +105,19 @@ export function registerPublicOpenApi(app: OpenAPIHono<any>) {
     responses: { 200: json(z.object({ status: z.literal("ok") }), "API is available") },
   });
   app.openAPIRegistry.registerPath({
+    method: "post", path: "/v1/client-errors", tags: ["System"], summary: "Report a sanitized mobile application error", security,
+    request: { body: { required: true, content: { "application/json": { schema: z.object({
+      event: z.string().min(1).max(120), errorType: z.string().min(1).max(120), errorCode: z.string().max(120).optional(),
+      message: z.string().max(2_000).optional(), stackTrace: z.string().max(8_000).optional(),
+      platform: z.enum(["android", "ios", "macos", "windows", "linux", "web", "unknown"]),
+      appVersion: z.string().min(1).max(40), buildNumber: z.string().min(1).max(40), releaseMode: z.boolean(),
+      occurredAt: z.iso.datetime(), clientErrorId: z.string().min(1).max(100),
+      httpMethod: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(), requestPath: z.string().max(200).optional(),
+      httpStatus: z.number().int().min(0).max(599).optional(),
+    }) } } } },
+    responses: { 202: json(z.object({ accepted: z.literal(true) }), "Error accepted"), 401: errors.unauthorized, 422: errors.validation, 429: errors.rateLimited },
+  });
+  app.openAPIRegistry.registerPath({
     method: "get", path: "/v1/catalog/movies", tags: ["Catalog"], summary: "Search movies",
     description: "Legacy movie-only TMDB search endpoint.", security,
     request: { query: z.object({ q: z.string().min(2).openapi({ description: "Movie title" }) }) },
@@ -118,7 +131,28 @@ export function registerPublicOpenApi(app: OpenAPIHono<any>) {
   app.openAPIRegistry.registerPath({
     method: "get", path: "/v1/catalog/streaming", tags: ["Catalog"], summary: "Find streaming availability in Brazil", security,
     request: { query: z.object({ provider: z.enum(["tmdb", "anilist"]), externalId: z.string().min(1), type: z.enum(["movie", "series", "anime"]), title: z.string().min(1) }) },
-    responses: { 200: json(z.object({ region: z.literal("BR"), checkedAt: z.iso.datetime(), providers: z.array(z.object({ name: z.string(), logoUrl: z.url().nullable(), url: z.url() })) }), "Streaming providers"), 401: errors.unauthorized, 422: errors.validation, 500: errors.internal },
+    responses: { 200: json(z.object({
+      region: z.literal("BR"), checkedAt: z.iso.datetime(),
+      providers: z.array(z.object({
+        name: z.string(), logoUrl: z.url().nullable(), url: z.url().nullable(),
+        type: z.enum(["subscription", "rent", "buy", "free", "ads"]),
+      })),
+      actors: z.array(z.object({ name: z.string(), role: z.string().nullable(), profileUrl: z.url().nullable() })),
+      directors: z.array(z.object({ name: z.string(), role: z.string().nullable(), profileUrl: z.url().nullable() })),
+      rating: z.number().min(0).max(10).nullable(), genres: z.array(z.string()),
+      trailerUrl: z.url().nullable(),
+      synopsis: z.string().nullable(),
+      seasons: z.array(z.object({
+        seasonNumber: z.number().int().min(0), name: z.string(),
+        overview: z.string().nullable(), airDate: z.string().nullable(),
+        episodeCount: z.number().int().min(0), posterUrl: z.url().nullable(),
+        episodes: z.array(z.object({
+          episodeNumber: z.number().int().min(0), name: z.string(),
+          overview: z.string().nullable(), airDate: z.string().nullable(),
+          runtimeMinutes: z.number().int().positive().nullable(),
+        })),
+      })),
+    }), "Work metadata and streaming providers"), 401: errors.unauthorized, 422: errors.validation, 500: errors.internal },
   });
 
   app.openAPIRegistry.registerPath({

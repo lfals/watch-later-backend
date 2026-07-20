@@ -22,7 +22,7 @@ The interactive Swagger UI is available at `http://localhost:3000/docs`. The Ope
 
 ## Logs and Grafana
 
-API and worker operational logs remain structured JSON on stdout and in PostgreSQL. When `LOKI_URL` is configured, the same records are also sent to Loki with `component`, `environment`, `level`, and `service` labels. A Loki failure never interrupts the application request or job that produced the log.
+API and worker operational logs remain structured JSON on stdout and in PostgreSQL. When `LOKI_URL` is configured, the same records are also sent to Loki with `component`, `environment`, `level`, and `service` labels. Authenticated mobile errors received through `POST /v1/client-errors` use the bounded `component=mobile` label. Diagnostics are length-limited and redact URLs, email addresses, bearer credentials, and JWT-shaped tokens. A Loki failure never interrupts the application request or job that produced the log.
 
 The Compose stack exposes Loki at `http://localhost:3100` and Grafana at `http://localhost:3001`. The local Grafana credentials default to `admin` / `watch_later_dev_secret`; override them with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `.env`. The Loki datasource and the **Watch Later — Logs** dashboard are provisioned automatically. Loki retains logs for seven days in the `loki-data` volume, while Grafana state is stored in `grafana-data`.
 
@@ -34,6 +34,7 @@ All `/v1` routes require a Clerk bearer token.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
+| `POST` | `/v1/client-errors` | Ingest a sanitized authenticated mobile error |
 | `POST` | `/v1/submissions` | Persist and enqueue a public Reel |
 | `GET` | `/v1/inbox?before=&limit=` | Paginated processing Inbox with candidates and linked work |
 | `GET` | `/v1/submissions/:id` | Submission detail, candidates, result, and canonical work |

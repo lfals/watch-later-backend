@@ -33,6 +33,7 @@ export function lokiLogSink(options: {
   if (!url) return undefined;
   const send = options.fetch ?? globalThis.fetch;
   return async (record) => {
+    const component = record.fields.component === "mobile" ? "mobile" : (options.component ?? "backend");
     const line = JSON.stringify({
       timestamp: record.timestamp.toISOString(),
       level: record.level,
@@ -50,7 +51,7 @@ export function lokiLogSink(options: {
         streams: [{
           stream: {
             service: record.service,
-            component: options.component ?? "backend",
+            component,
             environment: options.environment ?? "development",
             level: record.level,
           },

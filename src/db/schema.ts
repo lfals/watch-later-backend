@@ -1,4 +1,4 @@
-import { boolean, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid, index } from "drizzle-orm/pg-core";
+import { boolean, integer, jsonb, pgEnum, pgTable, real, text, timestamp, uniqueIndex, uuid, index } from "drizzle-orm/pg-core";
 
 export const workType = pgEnum("work_type", ["movie", "series", "anime"]);
 export const watchStatus = pgEnum("watch_status", ["want_to_watch", "watching", "watched"]);
@@ -93,6 +93,37 @@ export const externalWorkIds = pgTable("external_work_ids", {
   provider: catalogProvider("provider").notNull(),
   externalId: text("external_id").notNull(),
 }, (table) => [uniqueIndex("external_work_ids_provider_id_unique").on(table.provider, table.externalId)]);
+
+export const catalogMetadataCache = pgTable("catalog_metadata_cache", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  provider: catalogProvider("provider").notNull(),
+  externalId: text("external_id").notNull(),
+  type: workType("type").notNull(),
+  actors: jsonb("actors").$type<Array<{ name: string; role: string | null; profileUrl: string | null }>>().notNull().default([]),
+  directors: jsonb("directors").$type<Array<{ name: string; role: string | null; profileUrl: string | null }>>().notNull().default([]),
+  rating: real("rating"),
+  genres: jsonb("genres").$type<string[]>().notNull().default([]),
+  trailerUrl: text("trailer_url"),
+  synopsis: text("synopsis"),
+  seasons: jsonb("seasons").$type<Array<{
+    seasonNumber: number;
+    name: string;
+    overview: string | null;
+    airDate: string | null;
+    episodeCount: number;
+    posterUrl: string | null;
+    episodes: Array<{
+      episodeNumber: number;
+      name: string;
+      overview: string | null;
+      airDate: string | null;
+      runtimeMinutes: number | null;
+    }>;
+  }>>().notNull().default([]),
+  metadataVersion: integer("metadata_version").notNull().default(5),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("catalog_metadata_cache_work_unique").on(table.provider, table.externalId, table.type)]);
 
 export const watchlistEntries = pgTable("watchlist_entries", {
   id: uuid("id").primaryKey().defaultRandom(),

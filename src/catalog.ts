@@ -11,8 +11,50 @@ export type CatalogWork = {
   posterUrl: string | null;
 };
 export type CatalogMovie = Omit<CatalogWork, "provider" | "type"> & { provider?: CatalogProvider; type?: WorkKind };
-export type StreamingProvider = { name: string; logoUrl: string | null; url: string };
-export type StreamingAvailability = { region: "BR"; checkedAt: string; providers: StreamingProvider[] };
+export type StreamingOfferType = "subscription" | "rent" | "buy" | "free" | "ads";
+export type StreamingProvider = { name: string; logoUrl: string | null; url: string | null; type: StreamingOfferType };
+export type CatalogPerson = { name: string; role: string | null; profileUrl: string | null };
+export type CatalogEpisode = {
+  episodeNumber: number;
+  name: string;
+  overview: string | null;
+  airDate: string | null;
+  runtimeMinutes: number | null;
+};
+export type CatalogSeason = {
+  seasonNumber: number;
+  name: string;
+  overview: string | null;
+  airDate: string | null;
+  episodeCount: number;
+  posterUrl: string | null;
+  episodes: CatalogEpisode[];
+};
+export type CatalogMetadata = {
+  actors: CatalogPerson[];
+  directors: CatalogPerson[];
+  rating: number | null;
+  genres: string[];
+  trailerUrl: string | null;
+  seasons: CatalogSeason[];
+  synopsis: string | null;
+};
+export interface CatalogMetadataCache {
+  get(work: Pick<CatalogWork, "provider" | "externalId" | "type">): Promise<CatalogMetadata | null>;
+  put(work: Pick<CatalogWork, "provider" | "externalId" | "type">, metadata: CatalogMetadata): Promise<void>;
+}
+export type StreamingAvailability = {
+  region: "BR";
+  checkedAt: string;
+  providers: StreamingProvider[];
+  actors?: CatalogPerson[];
+  directors?: CatalogPerson[];
+  rating?: number | null;
+  genres?: string[];
+  trailerUrl?: string | null;
+  seasons?: CatalogSeason[];
+  synopsis?: string | null;
+};
 
 export interface Catalog {
   search(query: string, type: WorkKind): Promise<CatalogWork[]>;
@@ -36,7 +78,7 @@ const streamingSearchUrl = (providerName: string, title: string): string | null 
 };
 
 export class TmdbCatalog implements Catalog {
-  constructor(private readonly token: string) {}
+  constructor(private readonly token: string, private readonly metadataCache?: CatalogMetadataCache) {}
   async searchMovies(query: string) { return this.search(query, "movie"); }
   async search(query: string, type: WorkKind): Promise<CatalogWork[]> {
     if (type === "anime") return [];
@@ -44,7 +86,7 @@ export class TmdbCatalog implements Catalog {
     logEvent("catalog.search_started", { provider: "tmdb", workType: type, queryLength: query.length });
     const endpoint = type === "movie" ? "movie" : "tv";
     const url = new URL(`https://api.themoviedb.org/3/search/${endpoint}`);
-    url.searchParams.set("query", query); url.searchParams.set("language", "en-US"); url.searchParams.set("include_adult", "true");
+    url.searchParams.set("query", query); url.searchParams.set("language", "pt-BR"); url.searchParams.set("include_adult", "true");
     try {
       const response = await fetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
       if (!response.ok) throw new Error(`TMDB request failed: ${response.status}`);
@@ -65,35 +107,187 @@ export class TmdbCatalog implements Catalog {
   }
 
   async streaming(work: Pick<CatalogWork, "provider" | "externalId" | "type" | "title">): Promise<StreamingAvailability> {
-    if (work.provider !== "tmdb" || work.type === "anime") return { region: "BR", checkedAt: new Date().toISOString(), providers: [] };
+    if (work.provider !== "tmdb" || work.type === "anime") return {
+      region: "BR", checkedAt: new Date().toISOString(), providers: [], actors: [], directors: [], rating: null, genres: [], trailerUrl: null, seasons: [], synopsis: null,
+    };
     const startedAt = performance.now();
     logEvent("catalog.streaming_started", { provider: "tmdb", workType: work.type });
     const endpoint = work.type === "movie" ? "movie" : "tv";
     try {
-      const response = await fetch(`https://api.themoviedb.org/3/${endpoint}/${encodeURIComponent(work.externalId)}/watch/providers`, {
-        headers: { Authorization: `Bearer ${this.token}` },
+      const headers = { Authorization: `Bearer ${this.token}` };
+      const baseUrl = `https://api.themoviedb.org/3/${endpoint}/${encodeURIComponent(work.externalId)}`;
+      const cachedMetadata = await this.metadataCache?.get(work) ?? null;
+      logEvent(cachedMetadata ? "catalog.metadata_cache_hit" : "catalog.metadata_cache_miss", {
+        provider: "tmdb", workType: work.type,
       });
-      if (!response.ok) throw new Error(`TMDB request failed: ${response.status}`);
-      const body = await response.json() as { results?: { BR?: { flatrate?: Array<{ provider_id: number; provider_name: string; logo_path?: string }> } } };
-      const seen = new Set<number>();
-      const providers = (body.results?.BR?.flatrate ?? []).flatMap((item) => {
-        const url = streamingSearchUrl(item.provider_name, work.title);
-        if (!url || seen.has(item.provider_id)) return [];
-        seen.add(item.provider_id);
-        return [{ name: item.provider_name, logoUrl: item.logo_path ? `https://image.tmdb.org/t/p/w92${item.logo_path}` : null, url }];
-      });
-      logEvent("catalog.streaming_completed", { provider: "tmdb", workType: work.type, resultCount: providers.length, status: response.status, durationMs: Math.round(performance.now() - startedAt) });
-      return { region: "BR", checkedAt: new Date().toISOString(), providers };
+      const metadataRequest = cachedMetadata
+        ? Promise.resolve(cachedMetadata)
+        : this.fetchMetadata(baseUrl, headers, work.type).then(async (metadata) => {
+          await this.metadataCache?.put(work, metadata);
+          return metadata;
+        });
+      const [metadata, providersResponse] = await Promise.all([
+        metadataRequest,
+        fetch(`${baseUrl}/watch/providers`, { headers }),
+      ]);
+      if (!providersResponse.ok) throw new Error(`TMDB request failed: ${providersResponse.status}`);
+      type TmdbProvider = { provider_id: number; provider_name: string; logo_path?: string };
+      const body = await providersResponse.json() as { results?: { BR?: {
+        link?: string;
+        flatrate?: TmdbProvider[];
+        rent?: TmdbProvider[];
+        buy?: TmdbProvider[];
+        free?: TmdbProvider[];
+        ads?: TmdbProvider[];
+      } } };
+      const availability = body.results?.BR;
+      const fallbackUrl = (() => {
+        try {
+          const url = new URL(availability?.link ?? "");
+          return url.protocol === "https:" ? url.toString() : null;
+        } catch {
+          return null;
+        }
+      })();
+      const groups: Array<[StreamingOfferType, TmdbProvider[]]> = [
+        ["subscription", availability?.flatrate ?? []],
+        ["rent", availability?.rent ?? []],
+        ["buy", availability?.buy ?? []],
+        ["free", availability?.free ?? []],
+        ["ads", availability?.ads ?? []],
+      ];
+      const seen = new Set<string>();
+      const providers = groups.flatMap(([type, items]) => items.flatMap((item) => {
+        const key = `${type}:${item.provider_id}`;
+        if (seen.has(key)) return [];
+        seen.add(key);
+        return [{
+          name: item.provider_name,
+          logoUrl: item.logo_path ? `https://image.tmdb.org/t/p/w92${item.logo_path}` : null,
+          url: streamingSearchUrl(item.provider_name, work.title) ?? fallbackUrl,
+          type,
+        }];
+      }));
+      logEvent("catalog.streaming_completed", { provider: "tmdb", workType: work.type, resultCount: providers.length, status: providersResponse.status, durationMs: Math.round(performance.now() - startedAt) });
+      return { region: "BR", checkedAt: new Date().toISOString(), providers, ...metadata };
     } catch (error) {
       logError("catalog.streaming_failed", error, { provider: "tmdb", workType: work.type, durationMs: Math.round(performance.now() - startedAt) });
       throw error;
     }
   }
+
+  private async fetchMetadata(
+    baseUrl: string,
+    headers: { Authorization: string },
+    workType: WorkKind,
+  ): Promise<CatalogMetadata> {
+    const response = await fetch(`${baseUrl}?language=pt-BR&append_to_response=credits%2Cvideos&include_video_language=pt-BR%2Cpt%2Cen%2Cnull`, { headers });
+    if (!response.ok) throw new Error(`TMDB request failed: ${response.status}`);
+    const metadata = await response.json() as {
+      vote_average?: number;
+      genres?: Array<{ name: string }>;
+      credits?: {
+        cast?: Array<{ name: string; character?: string; profile_path?: string; order?: number }>;
+        crew?: Array<{ name: string; job?: string; profile_path?: string }>;
+      };
+      videos?: { results?: Array<{
+        key?: string;
+        site?: string;
+        type?: string;
+        official?: boolean;
+        published_at?: string;
+      }> };
+      seasons?: Array<{
+        season_number?: number;
+        name?: string;
+        overview?: string;
+        air_date?: string;
+        episode_count?: number;
+        poster_path?: string;
+      }>;
+      overview?: string;
+    };
+    const trailer = (metadata.videos?.results ?? [])
+      .filter((video) => video.site === "YouTube" && video.type === "Trailer" && /^[A-Za-z0-9_-]+$/.test(video.key ?? ""))
+      .toSorted((left, right) => {
+        if (left.official !== right.official) return left.official ? -1 : 1;
+        return (right.published_at ?? "").localeCompare(left.published_at ?? "");
+      })[0];
+    const seasonSummaries = (metadata.seasons ?? [])
+      .filter((season) => typeof season.season_number === "number")
+      .toSorted((left, right) => left.season_number! - right.season_number!);
+    const seasons: CatalogSeason[] = workType === "series"
+      ? await Promise.all(seasonSummaries.map(async (season) => {
+        const seasonNumber = season.season_number!;
+        const seasonResponse = await fetch(
+          `${baseUrl}/season/${seasonNumber}?language=pt-BR`,
+          { headers },
+        );
+        if (!seasonResponse.ok) throw new Error(`TMDB request failed: ${seasonResponse.status}`);
+        const seasonDetails = await seasonResponse.json() as {
+          episodes?: Array<{
+            episode_number?: number;
+            name?: string;
+            overview?: string;
+            air_date?: string;
+            runtime?: number;
+          }>;
+        };
+        const episodes = (seasonDetails.episodes ?? [])
+          .filter((episode) => typeof episode.episode_number === "number")
+          .toSorted((left, right) => left.episode_number! - right.episode_number!)
+          .map((episode) => ({
+            episodeNumber: episode.episode_number!,
+            name: episode.name?.trim() || `Episódio ${episode.episode_number}`,
+            overview: episode.overview?.trim() || null,
+            airDate: episode.air_date?.trim() || null,
+            runtimeMinutes: typeof episode.runtime === "number" && episode.runtime > 0
+              ? episode.runtime
+              : null,
+          }));
+        return {
+          seasonNumber,
+          name: season.name?.trim() || (seasonNumber === 0 ? "Especiais" : `Temporada ${seasonNumber}`),
+          overview: season.overview?.trim() || null,
+          airDate: season.air_date?.trim() || null,
+          episodeCount: episodes.length || season.episode_count || 0,
+          posterUrl: season.poster_path ? `https://image.tmdb.org/t/p/w300${season.poster_path}` : null,
+          episodes,
+        };
+      }))
+      : [];
+    return {
+      actors: (metadata.credits?.cast ?? [])
+        .toSorted((left, right) => (left.order ?? Number.MAX_SAFE_INTEGER) - (right.order ?? Number.MAX_SAFE_INTEGER))
+        .slice(0, 10)
+        .map((actor) => ({
+          name: actor.name,
+          role: actor.character?.trim() || null,
+          profileUrl: actor.profile_path ? `https://image.tmdb.org/t/p/w185${actor.profile_path}` : null,
+        })),
+      directors: (metadata.credits?.crew ?? [])
+        .filter((person) => person.job === "Director")
+        .map((director) => ({
+          name: director.name,
+          role: "Direção",
+          profileUrl: director.profile_path ? `https://image.tmdb.org/t/p/w185${director.profile_path}` : null,
+        })),
+      rating: typeof metadata.vote_average === "number" && metadata.vote_average > 0
+        ? Math.round(metadata.vote_average * 10) / 10
+        : null,
+      genres: (metadata.genres ?? []).map((genre) => genre.name),
+      trailerUrl: trailer?.key ? `https://www.youtube.com/watch?v=${trailer.key}` : null,
+      seasons,
+      synopsis: metadata.overview?.trim() || null,
+    };
+  }
 }
 
 export class AniListCatalog implements Catalog {
   async searchMovies() { return []; }
-  async streaming(): Promise<StreamingAvailability> { return { region: "BR", checkedAt: new Date().toISOString(), providers: [] }; }
+  async streaming(): Promise<StreamingAvailability> {
+    return { region: "BR", checkedAt: new Date().toISOString(), providers: [], actors: [], directors: [], rating: null, genres: [], trailerUrl: null, seasons: [], synopsis: null };
+  }
   async search(query: string, type: WorkKind): Promise<CatalogWork[]> {
     if (type !== "anime") return [];
     const startedAt = performance.now();

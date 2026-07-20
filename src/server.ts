@@ -12,6 +12,7 @@ import { combineLogSinks, configureLogSink, lokiLogSink, logError, logEvent } fr
 import { QuotaService } from "./quota.js";
 import { startQuotaReconciler } from "./quota-reconciler.js";
 import { artifactStorageFromConfig } from "./artifact-storage.js";
+import { DrizzleCatalogMetadataCache } from "./catalog-metadata-cache.js";
 
 const config = loadConfig();
 const artifactStorage = artifactStorageFromConfig(config);
@@ -25,7 +26,7 @@ configureLogSink(combineLogSinks(databaseLogSink(db), lokiLogSink({
   environment: process.env.RAILWAY_ENVIRONMENT_NAME ?? process.env.NODE_ENV,
 })));
 const tmdb = config.TMDB_API_TOKEN
-  ? new TmdbCatalog(config.TMDB_API_TOKEN)
+  ? new TmdbCatalog(config.TMDB_API_TOKEN, new DrizzleCatalogMetadataCache(db))
   : {
       searchMovies: async () => { throw new Error("TMDB_API_TOKEN is not configured"); },
       search: async () => { throw new Error("TMDB_API_TOKEN is not configured"); },

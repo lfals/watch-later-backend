@@ -1,0 +1,1 @@
+ALTER TABLE "catalog_metadata_cache" ADD COLUMN "directors" jsonb DEFAULT '[]'::jsonb NOT NULL;

@@ -40,7 +40,25 @@
     },
     {
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 5 },
+      "id": 9,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{ "expr": "sum(count_over_time({service=\"watch-later-backend\", component=\"mobile\", level=\"error\"}[$__range]))", "queryType": "instant", "refId": "A" }],
+      "title": "Erros do aplicativo",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 5, "w": 18, "x": 6, "y": 5 },
+      "id": 10,
+      "options": { "legend": { "displayMode": "list", "placement": "right", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
+      "targets": [{ "expr": "sum by (mobileEvent) (count_over_time({service=\"watch-later-backend\", component=\"mobile\", level=\"error\"} | json [$__auto]))", "legendFormat": "{{mobileEvent}}", "queryType": "range", "refId": "A" }],
+      "title": "Erros mobile por fluxo",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
       "id": 5,
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
       "targets": [{ "expr": "sum by (level) (count_over_time({service=\"watch-later-backend\", component=~\"$component\", level=~\"$level\"}[$__auto]))", "legendFormat": "{{level}}", "queryType": "range", "refId": "A" }],
@@ -49,7 +67,7 @@
     },
     {
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
       "id": 6,
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
       "targets": [{ "expr": "sum by (status) (count_over_time({service=\"watch-later-backend\", component=~\"$component\"} | json | event=\"http.request_completed\" [$__auto]))", "legendFormat": "HTTP {{status}}", "queryType": "range", "refId": "A" }],
@@ -58,7 +76,7 @@
     },
     {
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 13 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 18 },
       "id": 7,
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [{ "expr": "avg by (event) (avg_over_time({service=\"watch-later-backend\", component=~\"$component\"} | json | durationMs != \"\" | unwrap durationMs [$__auto]))", "legendFormat": "{{event}}", "queryType": "range", "refId": "A" }],
@@ -67,11 +85,11 @@
     },
     {
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 21 },
+      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 26 },
       "id": 8,
       "options": { "dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": true, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
       "targets": [{ "expr": "{service=\"watch-later-backend\", component=~\"$component\", level=~\"$level\"} | json | event=~\"$event\"", "queryType": "range", "refId": "A" }],
-      "title": "Logs correlacionáveis da API e do worker",
+      "title": "Logs correlacionáveis da API, worker e aplicativo",
       "type": "logs"
     }
   ],
@@ -89,5 +107,5 @@
   "timezone": "browser",
   "title": "Watch Later — Observabilidade",
   "uid": "watch-later-logs",
-  "version": 2
+  "version": 3
 }

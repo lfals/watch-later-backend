@@ -11,6 +11,7 @@ import { cors } from "hono/cors";
 import { swaggerUI } from "@hono/swagger-ui";
 import { registerPublicOpenApi } from "./openapi.js";
 import { randomUUID } from "node:crypto";
+import { mobileErrorSchema, recordMobileError } from "./mobile-error.js";
 
 type Repository = {
   addMovie(userId: string, movie: CatalogMovie): Promise<unknown>;
@@ -32,6 +33,7 @@ const catalogWorkSchema = movieSchema.extend({ provider: z.literal("tmdb"), type
 
 export function createApp(deps: { config: Config; catalog: Catalog; repository: Repository; queue?: SubmissionQueue; admin?: Pick<AdminStore, "role" | "logs" | "submissions" | "submission" | "artifact" | "health" | "audit" | "audits" | "prepareReprocess" | "cache" | "invalidateCache" | "quotas" | "updateGlobalQuotas" | "updateUserQuotas"> }) {
   const app = new OpenAPIHono<{ Variables: AuthVariables }>();
+  const mobileErrorWindows = new Map<string, { startedAt: number; count: number }>();
   app.use("*", async (c, next) => {
     const requestId = c.req.header("x-request-id")?.slice(0, 100) || randomUUID();
     c.header("x-request-id", requestId);
@@ -69,6 +71,19 @@ export function createApp(deps: { config: Config; catalog: Catalog; repository: 
     ],
   });
   app.use("/v1/*", authMiddleware(deps.config));
+  app.post("/v1/client-errors", async (c) => {
+    const parsed = mobileErrorSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: "invalid_client_error" }, 422);
+    const userId = c.get("clerkUserId");
+    const now = Date.now();
+    const current = mobileErrorWindows.get(userId);
+    const window = !current || now - current.startedAt >= 60_000 ? { startedAt: now, count: 0 } : current;
+    if (window.count >= 30) return c.json({ error: "client_error_rate_limited" }, 429);
+    window.count += 1;
+    mobileErrorWindows.set(userId, window);
+    recordMobileError(parsed.data);
+    return c.json({ accepted: true }, 202);
+  });
   app.use("/v1/admin/*", async (c, next) => {
     if (!deps.admin) return c.json({ error: "admin_unavailable" }, 503);
     const role = await deps.admin.role(c.get("clerkUserId"));

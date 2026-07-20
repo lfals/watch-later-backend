@@ -29,6 +29,23 @@ describe("Loki log sink", () => {
     });
     expect(JSON.parse(body.streams[0].values[0][1])).toMatchObject({ event: "worker.job_failed", jobId: "job-1" });
   });
+
+  it("uses the bounded mobile component override for client errors", async () => {
+    let request: RequestInit | undefined;
+    const fetch = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      request = init;
+      return new Response(null, { status: 204 });
+    }) as typeof globalThis.fetch;
+    const sink = lokiLogSink({ url: "http://loki:3100/loki/api/v1/push", component: "api", environment: "test", fetch });
+
+    await sink!({
+      timestamp: new Date("2026-07-20T12:00:00.000Z"), level: "error", service: "watch-later-backend",
+      event: "mobile.error", fields: { component: "mobile", mobileEvent: "flutter.framework_error" },
+    });
+
+    const body = JSON.parse(String(request?.body));
+    expect(body.streams[0].stream.component).toBe("mobile");
+  });
 });
 
 describe("structured log context", () => {

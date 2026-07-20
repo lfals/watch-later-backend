@@ -1,0 +1,2 @@
+ALTER TABLE "catalog_metadata_cache" ALTER COLUMN "metadata_version" SET DEFAULT 4;--> statement-breakpoint
+ALTER TABLE "catalog_metadata_cache" ADD COLUMN "seasons" jsonb DEFAULT '[]'::jsonb NOT NULL;

@@ -33,6 +33,7 @@ describe("manual watchlist slice", () => {
     const contract = await response.json() as { paths: Record<string, unknown>; components?: { securitySchemes?: Record<string, unknown> } };
     expect(Object.keys(contract.paths)).toEqual(expect.arrayContaining([
       "/health", "/v1/catalog/movies", "/v1/catalog/works", "/v1/catalog/streaming",
+      "/v1/client-errors",
       "/v1/watchlist/movies", "/v1/watchlist/works", "/v1/watchlist", "/v1/watchlist/{entryId}",
       "/v1/submissions", "/v1/submissions/{submissionId}", "/v1/submissions/{submissionId}/confirm",
       "/v1/submissions/{submissionId}/resolve", "/v1/submissions/{submissionId}/reprocess", "/v1/inbox",
@@ -67,6 +68,18 @@ describe("manual watchlist slice", () => {
     expect(generated.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/);
     const propagated = await app.request("/docs", { headers: { "x-request-id": "client-correlation-1" } });
     expect(propagated.headers.get("x-request-id")).toBe("client-correlation-1");
+  });
+
+  it("accepts only authenticated structured mobile errors", async () => {
+    const app = createApp({ config, catalog: { searchMovies: async () => [], search: async () => [], streaming: async () => ({ region: "BR", checkedAt: "", providers: [] }) }, repository: { addMovie: async () => ({}), list: async () => [], createSubmission: async () => ({}), inbox: async () => [], addWork: async () => ({}) } });
+    const payload = {
+      event: "api.request_failed", errorType: "DioException", errorCode: "http_500", platform: "android",
+      appVersion: "1.0.0", buildNumber: "1", releaseMode: true, occurredAt: "2026-07-20T12:00:00.000Z",
+      clientErrorId: "error-1", httpMethod: "GET", requestPath: "/v1/inbox", httpStatus: 500,
+    };
+    expect((await app.request("/v1/client-errors", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) })).status).toBe(401);
+    expect((await app.request("/v1/client-errors", { method: "POST", headers: { "content-type": "application/json", "x-dev-user-id": "mobile-user" }, body: JSON.stringify(payload) })).status).toBe(202);
+    expect((await app.request("/v1/client-errors", { method: "POST", headers: { "content-type": "application/json", "x-dev-user-id": "mobile-user" }, body: JSON.stringify({ ...payload, event: "invalid event" }) })).status).toBe(422);
   });
 
   it("normalizes a shared Reel and rejects unsupported links", async () => {
