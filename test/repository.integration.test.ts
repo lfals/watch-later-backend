@@ -153,15 +153,22 @@ describeWithDatabase("WatchlistRepository with PostgreSQL", () => {
       provider: "tmdb", externalId: "stremio-550", type: "movie", title: "Fight Club",
       originalTitle: "Fight Club", releaseYear: "1999", synopsis: "Fixture", posterUrl: "https://example.com/poster.jpg",
     });
-    const integration = new DrizzleStremioIntegration(db, async () => "tt0137523");
+    await repository.addWork("stremio_user", {
+      provider: "tmdb", externalId: "stremio-1399", type: "series", title: "Game of Thrones",
+      originalTitle: "Game of Thrones", releaseYear: "2011", synopsis: "Series fixture", posterUrl: null,
+    });
+    const integration = new DrizzleStremioIntegration(db, async (work) => work.type === "series" ? "tt0944947" : "tt0137523");
     const connection = await integration.connect("stremio_user", "https://api.watchlater.example/path");
     const token = new URL(connection.installUrl).pathname.split("/")[2];
 
     expect(token).toHaveLength(43);
     expect(await integration.status("stremio_user")).toMatchObject({ connected: true });
-    expect(await integration.catalog(token, "want_to_watch")).toEqual([{
+    expect(await integration.catalog(token, "movie", "want_to_watch")).toEqual([{
       id: "tt0137523", type: "movie", name: "Fight Club", poster: "https://example.com/poster.jpg",
       releaseInfo: "1999", description: "Fixture",
+    }]);
+    expect(await integration.catalog(token, "series", "want_to_watch")).toEqual([{
+      id: "tt0944947", type: "series", name: "Game of Thrones", releaseInfo: "2011", description: "Series fixture",
     }]);
     expect((await db.select().from(externalWorkIds)).some((id) => id.provider === "imdb" && id.externalId === "tt0137523")).toBe(true);
 

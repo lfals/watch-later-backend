@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { mobileErrorSchema, recordMobileError } from "./mobile-error.js";
 import {
   parseStremioSkip,
-  stremioCatalogStatus,
+  stremioCatalogSelection,
   stremioManifest,
   type StremioAction,
   type StremioIntegration,
@@ -108,9 +108,9 @@ export function createApp(deps: { config: Config; catalog: Catalog; repository: 
   });
   const serveStremioCatalog = async (c: Context<{ Variables: AuthVariables }>, type: string, catalogId: string, extra?: string) => {
     const token = c.req.param("token") ?? "";
-    const status = stremioCatalogStatus(catalogId);
-    if (!deps.stremio || !validStremioToken(token) || type !== "movie" || !status) return c.json({ metas: [] });
-    const metas = await deps.stremio.catalog(token, status, parseStremioSkip(extra));
+    const selection = stremioCatalogSelection(catalogId);
+    if (!deps.stremio || !validStremioToken(token) || !selection || type !== selection.type) return c.json({ metas: [] });
+    const metas = await deps.stremio.catalog(token, selection.type, selection.status, parseStremioSkip(extra));
     if (metas === null) return c.json({ error: "not_found" }, 404);
     c.header("Cache-Control", "private, max-age=30, stale-while-revalidate=60");
     return c.json({ metas });
@@ -121,12 +121,12 @@ export function createApp(deps: { config: Config; catalog: Catalog; repository: 
     return serveStremioCatalog(c, decodeURIComponent(match[1]), decodeURIComponent(match[2]), match[3] ? decodeURIComponent(match[3]) : undefined);
   });
   app.get("/stremio/:token/stream/*", async (c) => {
-    const match = c.req.path.match(/\/stream\/([^/]+)\/(tt\d+)\.json$/);
+    const match = c.req.path.match(/\/stream\/([^/]+)\/(tt\d+(?::\d+:\d+)?)\.json$/);
     if (!match) return c.json({ streams: [] });
     const token = c.req.param("token");
     const type = decodeURIComponent(match[1]);
-    const imdbId = match[2];
-    if (!deps.stremio || !validStremioToken(token) || type !== "movie" || !validImdbId(imdbId)) return c.json({ streams: [] });
+    const imdbId = match[2].split(":")[0];
+    if (!deps.stremio || !validStremioToken(token) || !["movie", "series"].includes(type) || !validImdbId(imdbId)) return c.json({ streams: [] });
     const item = await deps.stremio.action(token, imdbId);
     if (!item) return c.json({ streams: [] });
     c.header("Cache-Control", "no-store");

@@ -5,10 +5,11 @@ import { externalWorkIds, stremioConnections, users, watchlistEntries, works } f
 import { logEvent, logWarn } from "./logger.js";
 
 export type StremioWatchStatus = "want_to_watch" | "watching" | "watched";
+export type StremioContentType = "movie" | "series";
 
 export type StremioMeta = {
   id: string;
-  type: "movie";
+  type: StremioContentType;
   name: string;
   poster?: string;
   releaseInfo?: string;
@@ -27,12 +28,12 @@ export interface StremioIntegration {
   status(clerkUserId: string): Promise<{ connected: boolean; connectedAt: string | null }>;
   disconnect(clerkUserId: string): Promise<boolean>;
   isAuthorized(token: string): Promise<boolean>;
-  catalog(token: string, status: StremioWatchStatus, skip?: number): Promise<StremioMeta[] | null>;
+  catalog(token: string, type: StremioContentType, status: StremioWatchStatus, skip?: number): Promise<StremioMeta[] | null>;
   action(token: string, imdbId: string): Promise<StremioAction | null>;
   markWatched(token: string, imdbId: string): Promise<StremioAction | null>;
 }
 
-type ImdbIdResolver = (work: { externalId: string; type: "movie" }) => Promise<string | null>;
+type ImdbIdResolver = (work: { externalId: string; type: StremioContentType }) => Promise<string | null>;
 
 const tokenDigest = (token: string) => createHash("sha256").update(token).digest("hex");
 
@@ -98,7 +99,7 @@ export class DrizzleStremioIntegration implements StremioIntegration {
     return Boolean(await this.userByToken(token));
   }
 
-  async catalog(token: string, status: StremioWatchStatus, skip = 0): Promise<StremioMeta[] | null> {
+  async catalog(token: string, type: StremioContentType, status: StremioWatchStatus, skip = 0): Promise<StremioMeta[] | null> {
     const userId = await this.userByToken(token);
     if (!userId) return null;
     const entries = await this.db.select({
@@ -111,7 +112,7 @@ export class DrizzleStremioIntegration implements StremioIntegration {
       tmdbId: works.tmdbId,
     }).from(watchlistEntries)
       .innerJoin(works, eq(works.id, watchlistEntries.workId))
-      .where(and(eq(watchlistEntries.userId, userId), eq(watchlistEntries.status, status), eq(works.type, "movie")))
+      .where(and(eq(watchlistEntries.userId, userId), eq(watchlistEntries.status, status), eq(works.type, type)))
       .orderBy(desc(watchlistEntries.createdAt))
       .limit(100)
       .offset(skip);
@@ -134,7 +135,7 @@ export class DrizzleStremioIntegration implements StremioIntegration {
         const tmdbId = knownIds?.get("tmdb") ?? entry.tmdbId;
         if (!imdbId && tmdbId) {
           try {
-            imdbId = await this.resolveImdbId({ externalId: tmdbId, type: "movie" });
+            imdbId = await this.resolveImdbId({ externalId: tmdbId, type });
             if (imdbId) {
               await this.db.insert(externalWorkIds).values({ workId: entry.workId, provider: "imdb", externalId: imdbId }).onConflictDoNothing();
             }
@@ -145,7 +146,7 @@ export class DrizzleStremioIntegration implements StremioIntegration {
         if (!imdbId) return null;
         return {
           id: imdbId,
-          type: "movie",
+          type,
           name: entry.title,
           ...(entry.posterUrl ? { poster: entry.posterUrl } : {}),
           ...(entry.releaseYear ? { releaseInfo: entry.releaseYear } : {}),
@@ -172,7 +173,7 @@ export class DrizzleStremioIntegration implements StremioIntegration {
         eq(watchlistEntries.userId, userId),
         eq(externalWorkIds.provider, "imdb"),
         eq(externalWorkIds.externalId, imdbId),
-        eq(works.type, "movie"),
+        inArray(works.type, ["movie", "series"]),
       ));
     return item ?? null;
   }
@@ -191,25 +192,31 @@ export class DrizzleStremioIntegration implements StremioIntegration {
 
 export const stremioManifest = {
   id: "app.watchlater.catalog",
-  version: "1.0.0",
+  version: "1.1.0",
   name: "Watchlater",
-  description: "Filmes identificados pelo Watchlater, disponíveis no Stremio.",
+  description: "Filmes e séries identificados pelo Watchlater, disponíveis no Stremio.",
   resources: [
     "catalog",
-    { name: "stream", types: ["movie"], idPrefixes: ["tt"] },
+    { name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] },
   ],
-  types: ["movie"],
+  types: ["movie", "series"],
   catalogs: [
-    { type: "movie", id: "watchlater-want-to-watch", name: "Watchlater — Quero assistir", extra: [{ name: "skip" }] },
-    { type: "movie", id: "watchlater-watching", name: "Watchlater — Assistindo", extra: [{ name: "skip" }] },
-    { type: "movie", id: "watchlater-watched", name: "Watchlater — Vistos", extra: [{ name: "skip" }] },
+    { type: "movie", id: "watchlater-want-to-watch", name: "Watchlater — Filmes — Quero assistir", extra: [{ name: "skip" }] },
+    { type: "movie", id: "watchlater-watching", name: "Watchlater — Filmes — Assistindo", extra: [{ name: "skip" }] },
+    { type: "movie", id: "watchlater-watched", name: "Watchlater — Filmes — Vistos", extra: [{ name: "skip" }] },
+    { type: "series", id: "watchlater-series-want-to-watch", name: "Watchlater — Séries — Quero assistir", extra: [{ name: "skip" }] },
+    { type: "series", id: "watchlater-series-watching", name: "Watchlater — Séries — Assistindo", extra: [{ name: "skip" }] },
+    { type: "series", id: "watchlater-series-watched", name: "Watchlater — Séries — Vistas", extra: [{ name: "skip" }] },
   ],
 };
 
-export const stremioCatalogStatus = (catalogId: string): StremioWatchStatus | null => ({
-  "watchlater-want-to-watch": "want_to_watch",
-  "watchlater-watching": "watching",
-  "watchlater-watched": "watched",
+export const stremioCatalogSelection = (catalogId: string): { type: StremioContentType; status: StremioWatchStatus } | null => ({
+  "watchlater-want-to-watch": { type: "movie", status: "want_to_watch" },
+  "watchlater-watching": { type: "movie", status: "watching" },
+  "watchlater-watched": { type: "movie", status: "watched" },
+  "watchlater-series-want-to-watch": { type: "series", status: "want_to_watch" },
+  "watchlater-series-watching": { type: "series", status: "watching" },
+  "watchlater-series-watched": { type: "series", status: "watched" },
 } as const)[catalogId] ?? null;
 
 export const parseStremioSkip = (extra?: string) => {

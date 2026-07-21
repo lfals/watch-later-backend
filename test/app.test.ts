@@ -219,17 +219,19 @@ describe("manual watchlist slice", () => {
   it("serves a personal Stremio catalog and requires confirmation before marking a movie watched", async () => {
     const token = "a".repeat(43);
     const marked: string[] = [];
-    const catalogRequests: Array<{ status: string; skip?: number }> = [];
+    const catalogRequests: Array<{ type: string; status: string; skip?: number }> = [];
     const stremio = {
       connect: async (_user: string, baseUrl: string) => ({ installUrl: `${baseUrl}/stremio/${token}/manifest.json`, connectedAt: "2026-07-21T12:00:00.000Z" }),
       status: async () => ({ connected: true, connectedAt: "2026-07-21T12:00:00.000Z" }),
       disconnect: async () => true,
       isAuthorized: async (candidate: string) => candidate === token,
-      catalog: async (_token: string, status: "want_to_watch" | "watching" | "watched", skip?: number) => {
-        catalogRequests.push({ status, skip });
-        return [{ id: "tt0137523", type: "movie" as const, name: "Fight Club", releaseInfo: "1999" }];
+      catalog: async (_token: string, type: "movie" | "series", status: "want_to_watch" | "watching" | "watched", skip?: number) => {
+        catalogRequests.push({ type, status, skip });
+        return type === "series"
+          ? [{ id: "tt0944947", type: "series" as const, name: "Game of Thrones", releaseInfo: "2011" }]
+          : [{ id: "tt0137523", type: "movie" as const, name: "Fight Club", releaseInfo: "1999" }];
       },
-      action: async (_token: string, imdbId: string) => imdbId === "tt0137523" ? ({ entryId: "entry-1", imdbId, title: "Fight Club", status: "want_to_watch" as const }) : null,
+      action: async (_token: string, imdbId: string) => ["tt0137523", "tt0944947"].includes(imdbId) ? ({ entryId: "entry-1", imdbId, title: imdbId === "tt0944947" ? "Game of Thrones" : "Fight Club", status: "want_to_watch" as const }) : null,
       markWatched: async (_token: string, imdbId: string) => {
         marked.push(imdbId);
         return { entryId: "entry-1", imdbId, title: "Fight Club", status: "watched" as const };
@@ -249,18 +251,32 @@ describe("manual watchlist slice", () => {
     const manifest = await app.request(`/stremio/${token}/manifest.json`);
     expect(manifest.status).toBe(200);
     expect(manifest.headers.get("access-control-allow-origin")).toBe("*");
-    expect((await manifest.json()).resources).toContain("catalog");
+    const manifestBody = await manifest.json() as { types: string[]; resources: unknown[]; catalogs: Array<{ type: string; id: string }> };
+    expect(manifestBody.resources).toContain("catalog");
+    expect(manifestBody.types).toEqual(["movie", "series"]);
+    expect(manifestBody.catalogs).toContainEqual(expect.objectContaining({ type: "series", id: "watchlater-series-want-to-watch" }));
     expect((await app.request(`/stremio/${"b".repeat(43)}/manifest.json`)).status).toBe(404);
 
     const catalog = await app.request(`/stremio/${token}/catalog/movie/watchlater-want-to-watch/skip=100.json`);
     expect(await catalog.json()).toEqual({ metas: [{ id: "tt0137523", type: "movie", name: "Fight Club", releaseInfo: "1999" }] });
-    expect(catalogRequests).toEqual([{ status: "want_to_watch", skip: 100 }]);
+    const seriesCatalog = await app.request(`/stremio/${token}/catalog/series/watchlater-series-want-to-watch.json`);
+    expect(await seriesCatalog.json()).toEqual({ metas: [{ id: "tt0944947", type: "series", name: "Game of Thrones", releaseInfo: "2011" }] });
+    expect(catalogRequests).toEqual([
+      { type: "movie", status: "want_to_watch", skip: 100 },
+      { type: "series", status: "want_to_watch", skip: 0 },
+    ]);
 
     const streams = await app.request(`/stremio/${token}/stream/movie/tt0137523.json`);
     expect(await streams.json()).toEqual({ streams: [{
       name: "Watchlater",
       description: "Marcar como visto no Watchlater",
       externalUrl: `http://localhost/stremio/${token}/action/watched/tt0137523`,
+    }] });
+    const seriesStreams = await app.request(`/stremio/${token}/stream/series/tt0944947:1:1.json`);
+    expect(await seriesStreams.json()).toEqual({ streams: [{
+      name: "Watchlater",
+      description: "Marcar como visto no Watchlater",
+      externalUrl: `http://localhost/stremio/${token}/action/watched/tt0944947`,
     }] });
     const confirmation = await app.request(`/stremio/${token}/action/watched/tt0137523`);
     expect(confirmation.status).toBe(200);
