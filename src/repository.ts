@@ -59,9 +59,11 @@ export class WatchlistRepository {
     return this.db.select({
       entryId: watchlistEntries.id, status: watchlistEntries.status, workId: works.id,
       title: works.title, originalTitle: works.originalTitle, releaseYear: works.releaseYear, synopsis: works.synopsis, posterUrl: works.posterUrl, tmdbId: works.tmdbId,
-      externalId: externalWorkIds.externalId, provider: externalWorkIds.provider, type: works.type,
+      externalId: works.tmdbId,
+      provider: sql<"tmdb" | null>`case when ${works.tmdbId} is not null then 'tmdb' else null end`,
+      type: works.type,
       createdAt: watchlistEntries.createdAt,
-    }).from(watchlistEntries).innerJoin(works, eq(works.id, watchlistEntries.workId)).leftJoin(externalWorkIds, eq(externalWorkIds.workId, works.id))
+    }).from(watchlistEntries).innerJoin(works, eq(works.id, watchlistEntries.workId))
       .where(and(...conditions)).orderBy(
         asc(sql`case ${watchlistEntries.status}
           when 'watching' then 0
@@ -208,10 +210,10 @@ export class WatchlistRepository {
     const [item] = await this.db.select({
       entryId: watchlistEntries.id, status: watchlistEntries.status, workId: works.id, type: works.type,
       title: works.title, originalTitle: works.originalTitle, releaseYear: works.releaseYear,
-      synopsis: works.synopsis, posterUrl: works.posterUrl, externalId: externalWorkIds.externalId,
-      provider: externalWorkIds.provider, isCustom: works.isCustom,
+      synopsis: works.synopsis, posterUrl: works.posterUrl, externalId: works.tmdbId,
+      provider: sql<"tmdb" | null>`case when ${works.tmdbId} is not null then 'tmdb' else null end`,
+      isCustom: works.isCustom,
     }).from(watchlistEntries).innerJoin(works, eq(works.id, watchlistEntries.workId))
-      .leftJoin(externalWorkIds, eq(externalWorkIds.workId, works.id))
       .where(and(eq(watchlistEntries.id, entryId), eq(watchlistEntries.userId, userId)));
     if (!item) throw new Error("watchlist_entry_not_found");
     const sources = await this.db.select({

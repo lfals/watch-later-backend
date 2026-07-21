@@ -170,6 +170,12 @@ describeWithDatabase("WatchlistRepository with PostgreSQL", () => {
     expect(await integration.catalog(token, "series", "want_to_watch")).toEqual([{
       id: "tt0944947", type: "series", name: "Game of Thrones", releaseInfo: "2011", description: "Series fixture",
     }]);
+    const listedAfterImdbResolution = await repository.list("stremio_user");
+    expect(listedAfterImdbResolution).toHaveLength(2);
+    expect(listedAfterImdbResolution).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Fight Club", provider: "tmdb", externalId: "stremio-550" }),
+      expect.objectContaining({ title: "Game of Thrones", provider: "tmdb", externalId: "stremio-1399" }),
+    ]));
     expect((await db.select().from(externalWorkIds)).some((id) => id.provider === "imdb" && id.externalId === "tt0137523")).toBe(true);
 
     expect((await integration.action(token, "tt0137523"))?.status).toBe("want_to_watch");
