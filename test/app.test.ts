@@ -1,16 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { authorizedPartiesForToken } from "../src/auth.js";
 import type { CatalogWork } from "../src/catalog.js";
 import { loadConfig } from "../src/config.js";
 
 const movie: CatalogWork = { provider: "tmdb", type: "movie", externalId: "550", title: "Fight Club", originalTitle: "Fight Club", releaseYear: "1999", synopsis: "Test", posterUrl: null };
 const config = { PORT: 3000, DATABASE_URL: "test", REDIS_URL: "redis://localhost:6379", GEMINI_MODEL: "gemini-3.5-flash", CLERK_AUTHORIZED_PARTIES: "", ALLOW_DEV_AUTH: "true" as const, ADMIN_CLERK_USER_IDS: "", ADMIN_ORIGINS: "http://localhost:5173", SCRAPER_ENABLED: "true" as const, SCRAPER_BROWSER_FALLBACK: "true" as const, SCRAPER_YTDLP_FALLBACK: "true" as const, IDENTIFICATION_PIPELINE_VERSION: "v1", IDENTIFICATION_CACHE_TTL_DAYS: 180, TEMPORARY_MEDIA_RETENTION_DAYS: 7 };
+const unsignedToken = (payload: Record<string, unknown>) => [
+  Buffer.from(JSON.stringify({ alg: "RS256", kid: "test" })).toString("base64url"),
+  Buffer.from(JSON.stringify(payload)).toString("base64url"),
+  Buffer.from("signature").toString("base64url"),
+].join(".");
 
 describe("manual watchlist slice", () => {
   it("requires an authorized Clerk party outside development auth", () => {
     expect(() => loadConfig({ DATABASE_URL: "test", ALLOW_DEV_AUTH: "false", CLERK_AUTHORIZED_PARTIES: "" })).toThrow();
     expect(loadConfig({ DATABASE_URL: "test" }).CLERK_AUTHORIZED_PARTIES)
       .toContain("chrome-extension://flhdhfkcdekjplgdjojflifnioleggok");
+  });
+
+  it("supports native Clerk tokens while preserving browser authorized-party checks", () => {
+    const parties = "https://watchlater.felps.zip,chrome-extension://example";
+
+    expect(authorizedPartiesForToken(unsignedToken({ sub: "native-user" }), parties)).toBeUndefined();
+    expect(authorizedPartiesForToken(unsignedToken({ sub: "web-user", azp: "https://watchlater.felps.zip" }), parties))
+      .toEqual(["https://watchlater.felps.zip", "chrome-extension://example"]);
   });
 
   it("allows the production admin origin by default", async () => {
