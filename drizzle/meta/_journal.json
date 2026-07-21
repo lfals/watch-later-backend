@@ -127,6 +127,13 @@
       "when": 1784556602547,
       "tag": "0017_shallow_kylun",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784649409053,
+      "tag": "0018_abandoned_ultragirl",
+      "breakpoints": true
     }
   ]
 }

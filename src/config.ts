@@ -1,5 +1,11 @@
 import { z } from "zod";
 
+const defaultAuthorizedParties = [
+  "http://localhost:5173",
+  "https://watchlater.felps.zip",
+  "chrome-extension://flhdhfkcdekjplgdjojflifnioleggok",
+].join(",");
+
 const schema = z.object({
   PORT: z.coerce.number().default(3000),
   DATABASE_URL: z.string().min(1),
@@ -8,7 +14,7 @@ const schema = z.object({
   GEMINI_MODEL: z.string().default("gemini-3.5-flash"),
   CLERK_JWT_KEY: z.string().optional(),
   CLERK_SECRET_KEY: z.string().optional(),
-  CLERK_AUTHORIZED_PARTIES: z.string().default(""),
+  CLERK_AUTHORIZED_PARTIES: z.string().default(defaultAuthorizedParties),
   TMDB_API_TOKEN: z.string().optional(),
   ALLOW_DEV_AUTH: z.enum(["true", "false"]).default("false"),
   ADMIN_CLERK_USER_IDS: z.string().default(""),
@@ -27,7 +33,10 @@ const schema = z.object({
   S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
   LOKI_URL: z.url().optional(),
   LOKI_TENANT_ID: z.string().min(1).optional(),
-});
+}).refine(
+  (config) => config.ALLOW_DEV_AUTH === "true" || config.CLERK_AUTHORIZED_PARTIES.split(",").some((party) => party.trim()),
+  { path: ["CLERK_AUTHORIZED_PARTIES"], message: "required when development authentication is disabled" },
+);
 
 export type Config = z.infer<typeof schema>;
 export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => schema.parse(env);

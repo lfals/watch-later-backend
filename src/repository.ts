@@ -79,13 +79,14 @@ export class WatchlistRepository {
     const [created] = await this.db.insert(reelSubmissions).values({ userId, ...reel }).onConflictDoNothing().returning();
     if (created) {
       const cached = await this.applyUrlCache(created);
-      if (cached.cacheHit) return { ...cached, shouldEnqueue: false };
+      if (cached.cacheHit) return { ...cached, outcome: "cache_hit" as const, shouldEnqueue: false };
       const admission = await this.quotas.admitSubmission(created.id);
-      return { ...created, ...admission, cacheHit: false, shouldEnqueue: admission.admitted };
+      const outcome = admission.status === "waiting_for_quota" ? "waiting_for_quota" as const : "accepted" as const;
+      return { ...created, ...admission, outcome, cacheHit: false, shouldEnqueue: admission.admitted };
     }
     const [existing] = await this.db.select().from(reelSubmissions)
       .where(and(eq(reelSubmissions.userId, userId), eq(reelSubmissions.normalizedUrlHash, reel.normalizedUrlHash)));
-    return { ...existing, cacheHit: existing.status === "identified" || existing.status === "needs_confirmation", shouldEnqueue: false };
+    return { ...existing, outcome: "already_exists" as const, cacheHit: existing.status === "identified" || existing.status === "needs_confirmation", shouldEnqueue: false };
   }
 
   private async applyUrlCache(submission: typeof reelSubmissions.$inferSelect) {

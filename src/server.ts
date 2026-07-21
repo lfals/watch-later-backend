@@ -13,6 +13,7 @@ import { QuotaService } from "./quota.js";
 import { startQuotaReconciler } from "./quota-reconciler.js";
 import { artifactStorageFromConfig } from "./artifact-storage.js";
 import { DrizzleCatalogMetadataCache } from "./catalog-metadata-cache.js";
+import { DrizzleStremioIntegration } from "./stremio.js";
 
 const config = loadConfig();
 const artifactStorage = artifactStorageFromConfig(config);
@@ -31,11 +32,13 @@ const tmdb = config.TMDB_API_TOKEN
       searchMovies: async () => { throw new Error("TMDB_API_TOKEN is not configured"); },
       search: async () => { throw new Error("TMDB_API_TOKEN is not configured"); },
       streaming: async () => { throw new Error("TMDB_API_TOKEN is not configured"); },
+      imdbId: async () => { throw new Error("TMDB_API_TOKEN is not configured"); },
     };
 const catalog = new CompositeCatalog(tmdb, new AniListCatalog());
 const queue = new BullSubmissionQueue(config.REDIS_URL);
 const app = createApp({
   config, catalog, repository: new WatchlistRepository(db, config.IDENTIFICATION_PIPELINE_VERSION, config.IDENTIFICATION_CACHE_TTL_DAYS), queue,
+  stremio: new DrizzleStremioIntegration(db, (work) => tmdb.imdbId(work)),
   admin: new AdminStore(db, new Set(config.ADMIN_CLERK_USER_IDS.split(",").map((item) => item.trim()).filter(Boolean)), artifactStorage),
 });
 startQuotaReconciler(new QuotaService(db), queue);

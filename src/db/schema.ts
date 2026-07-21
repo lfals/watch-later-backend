@@ -134,6 +134,17 @@ export const watchlistEntries = pgTable("watchlist_entries", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [uniqueIndex("watchlist_user_work_unique").on(table.userId, table.workId)]);
 
+export const stremioConnections = pgTable("stremio_connections", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("stremio_connections_user_unique").on(table.userId),
+  uniqueIndex("stremio_connections_token_hash_unique").on(table.tokenHash),
+]);
+
 export const reelSubmissions = pgTable("reel_submissions", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),

@@ -24,6 +24,9 @@ const submissionStatusSchema = z.enum([
   "queued", "waiting_for_quota", "scraping", "identifying",
   "needs_confirmation", "identified", "failed",
 ]);
+const submissionOutcomeSchema = z.enum([
+  "accepted", "already_exists", "cache_hit", "waiting_for_quota",
+]);
 
 const movieSchema = z.object({
   externalId: z.string().openapi({ example: "550" }),
@@ -189,7 +192,7 @@ export function registerPublicOpenApi(app: OpenAPIHono<any>) {
   app.openAPIRegistry.registerPath({
     method: "post", path: "/v1/submissions", tags: ["Submissions"], summary: "Submit an Instagram Reel for identification", security,
     request: { body: { required: true, content: { "application/json": { schema: z.object({ url: z.string().openapi({ example: "https://www.instagram.com/reel/ABC123/" }) }) } } } },
-    responses: { 202: json(z.object({ item: submissionSchema }), "Submission persisted and accepted for processing"), 401: errors.unauthorized, 422: errors.validation, 429: errors.rateLimited, 500: errors.internal },
+    responses: { 202: json(z.object({ item: submissionSchema, outcome: submissionOutcomeSchema }), "Submission persisted with an explicit processing outcome"), 401: errors.unauthorized, 422: errors.validation, 429: errors.rateLimited, 500: errors.internal },
   });
   app.openAPIRegistry.registerPath({
     method: "get", path: "/v1/submissions/{submissionId}", tags: ["Submissions"], summary: "Get submission details", security,
@@ -215,5 +218,17 @@ export function registerPublicOpenApi(app: OpenAPIHono<any>) {
     method: "get", path: "/v1/inbox", tags: ["Submissions"], summary: "List unresolved submissions", security,
     request: { query: paginationQuery },
     responses: { 200: json(z.object({ items: z.array(submissionSchema), nextCursor: z.iso.datetime().nullable() }), "Paginated submission inbox"), 401: errors.unauthorized, 422: errors.validation, 500: errors.internal },
+  });
+  app.openAPIRegistry.registerPath({
+    method: "get", path: "/v1/integrations/stremio", tags: ["Integrations"], summary: "Get the Stremio connection status", security,
+    responses: { 200: json(z.object({ connected: z.boolean(), connectedAt: z.iso.datetime().nullable() }), "Stremio connection status"), 401: errors.unauthorized, 503: errors.internal },
+  });
+  app.openAPIRegistry.registerPath({
+    method: "post", path: "/v1/integrations/stremio", tags: ["Integrations"], summary: "Create or rotate the personal Stremio addon URL", security,
+    responses: { 201: json(z.object({ installUrl: z.url(), connectedAt: z.iso.datetime() }), "Personal addon installation URL; returned only when created or rotated"), 401: errors.unauthorized, 503: errors.internal },
+  });
+  app.openAPIRegistry.registerPath({
+    method: "delete", path: "/v1/integrations/stremio", tags: ["Integrations"], summary: "Revoke the personal Stremio addon", security,
+    responses: { 204: { description: "Connection revoked" }, 401: errors.unauthorized, 503: errors.internal },
   });
 }

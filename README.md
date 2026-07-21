@@ -32,6 +32,8 @@ Railway runs Loki and Grafana as separate services with persistent volumes mount
 
 All `/v1` routes require a Clerk bearer token.
 
+`CLERK_AUTHORIZED_PARTIES` is mandatory whenever development authentication is disabled. Keep the production web origin and the stable extension origin `chrome-extension://flhdhfkcdekjplgdjojflifnioleggok` in this allowlist.
+
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `POST` | `/v1/client-errors` | Ingest a sanitized authenticated mobile error |
@@ -46,8 +48,23 @@ All `/v1` routes require a Clerk bearer token.
 | `GET` | `/v1/watchlist/:entryId` | Work detail and source-Reel history |
 | `PATCH` | `/v1/watchlist/:entryId` | Set `want_to_watch`, `watching`, or `watched` |
 | `DELETE` | `/v1/watchlist/:entryId` | Remove the user's entry without deleting canonical data |
+| `GET` | `/v1/integrations/stremio` | Return whether the personal Stremio addon is connected |
+| `POST` | `/v1/integrations/stremio` | Create or rotate the personal Stremio installation URL |
+| `DELETE` | `/v1/integrations/stremio` | Revoke the personal Stremio addon immediately |
 
 Stable client errors include `invalid_reel_url`, `unsupported_url`, `invalid_candidate`, `candidate_not_allowed`, `submission_busy`, `submission_already_resolved`, `submission_not_found`, `watchlist_entry_not_found`, and `invalid_pagination`. Unexpected failures return only `internal_error`; detailed diagnostics remain in protected operational logs.
+
+Successful `POST /v1/submissions` responses keep the existing `item` and add an `outcome`: `accepted` for newly admitted work, `already_exists` for a duplicate owned by the user, `cache_hit` when the global URL cache resolves a new submission, or `waiting_for_quota` when the persisted submission will be admitted later.
+
+## Stremio addon integration
+
+The official integration is a personal Stremio addon backed by the API. An authenticated client calls `POST /v1/integrations/stremio` and receives a one-time installation URL ending in `/stremio/{token}/manifest.json`. Creating another URL rotates the token and invalidates the previous installation; `DELETE` revokes it. Only a SHA-256 digest of the token is stored.
+
+Once installed, Stremio receives three movie catalogs: **Quero assistir**, **Assistindo**, and **Vistos**. The first catalog request resolves each TMDB movie to its IMDb ID and stores the mapping in `external_work_ids`; standard `tt...` IDs let Cinemeta and the user's existing stream addons continue to provide metadata and playback. Catalog responses use a 30-second private cache, so newly processed Reels appear after the next refresh/cache window.
+
+The addon also returns an external stream action named **Marcar como visto no Watchlater** for unwatched catalog entries. Opening it serves a no-cache confirmation page. The `GET` never mutates state; its form performs an idempotent `POST` that updates the Watchlater entry to `watched`. Stremio does not expose playback-completion events to addons, so this explicit confirmation is the supported synchronization boundary.
+
+The addon routes allow cross-origin reads as required by the Stremio protocol. Sensitive token path segments are redacted from structured request logs, action pages disable referrers and framing, and revoked or malformed tokens return `404`.
 
 ## Global cache and deduplication
 

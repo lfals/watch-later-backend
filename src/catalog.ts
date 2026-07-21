@@ -80,6 +80,16 @@ const streamingSearchUrl = (providerName: string, title: string): string | null 
 export class TmdbCatalog implements Catalog {
   constructor(private readonly token: string, private readonly metadataCache?: CatalogMetadataCache) {}
   async searchMovies(query: string) { return this.search(query, "movie"); }
+  async imdbId(work: Pick<CatalogWork, "externalId" | "type">): Promise<string | null> {
+    if (work.type === "anime") return null;
+    const endpoint = work.type === "movie" ? "movie" : "tv";
+    const response = await fetch(`https://api.themoviedb.org/3/${endpoint}/${encodeURIComponent(work.externalId)}/external_ids`, {
+      headers: { Authorization: `Bearer ${this.token}` },
+    });
+    if (!response.ok) throw new Error(`TMDB request failed: ${response.status}`);
+    const body = await response.json() as { imdb_id?: string | null };
+    return typeof body.imdb_id === "string" && /^tt\d+$/.test(body.imdb_id) ? body.imdb_id : null;
+  }
   async search(query: string, type: WorkKind): Promise<CatalogWork[]> {
     if (type === "anime") return [];
     const startedAt = performance.now();

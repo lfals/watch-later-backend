@@ -3,11 +3,12 @@ import { eq } from "drizzle-orm";
 import { Pool } from "pg";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { WatchlistRepository } from "../src/repository.js";
-import { dailyQuotaUsage, dailyRetryUsage, identificationCache, quotaSettings, reelSubmissions, userQuotaOverrides, users, watchlistEntries, works } from "../src/db/schema.js";
+import { dailyQuotaUsage, dailyRetryUsage, externalWorkIds, identificationCache, quotaSettings, reelSubmissions, stremioConnections, userQuotaOverrides, users, watchlistEntries, works } from "../src/db/schema.js";
 import { DrizzlePipelineStore } from "../src/pipeline-store.js";
 import { normalizeInstagramReel } from "../src/reels.js";
 import { AdminStore } from "../src/admin.js";
 import { QuotaService } from "../src/quota.js";
+import { DrizzleStremioIntegration } from "../src/stremio.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
@@ -41,15 +42,26 @@ describeWithDatabase("WatchlistRepository with PostgreSQL", () => {
     const concurrent = await Promise.all(Array.from({ length: 11 }, (_, index) =>
       repository.createSubmission("quota_default", normalizeInstagramReel(`https://www.instagram.com/reel/QUOTA${index}/`))));
     expect(concurrent.filter((item) => item.status === "queued")).toHaveLength(10);
+    expect(concurrent.filter((item) => item.status === "queued").every((item) => item.outcome === "accepted")).toBe(true);
     expect(concurrent.filter((item) => item.status === "waiting_for_quota")).toHaveLength(1);
+    expect(concurrent.find((item) => item.status === "waiting_for_quota")).toMatchObject({ outcome: "waiting_for_quota", shouldEnqueue: false });
     expect(concurrent.filter((item) => "charged" in item && item.charged === true)).toHaveLength(10);
 
     const cachedReel = normalizeInstagramReel("https://www.instagram.com/reel/FREECACHE/");
     await db.insert(identificationCache).values({ normalizedUrlHash: cachedReel.normalizedUrlHash, pipelineVersion: "v1", status: "needs_confirmation", expiresAt: new Date(Date.now() + 60_000) });
     const cached = await repository.createSubmission("quota_default", cachedReel);
-    expect(cached).toMatchObject({ cacheHit: true, status: "needs_confirmation", shouldEnqueue: false });
+    expect(cached).toMatchObject({ outcome: "cache_hit", cacheHit: true, status: "needs_confirmation", shouldEnqueue: false });
     const [usage] = await db.select().from(dailyQuotaUsage);
     expect(usage.novelCount).toBe(10);
+  });
+
+  it("reports when the user already submitted the same Reel", async () => {
+    const reel = normalizeInstagramReel("https://www.instagram.com/reel/ALREADY123/");
+    await repository.createSubmission("duplicate_user", reel);
+
+    const duplicate = await repository.createSubmission("duplicate_user", reel);
+
+    expect(duplicate).toMatchObject({ outcome: "already_exists", shouldEnqueue: false });
   });
 
   it("supports per-user overrides and admits waiting work when capacity changes", async () => {
@@ -134,6 +146,33 @@ describeWithDatabase("WatchlistRepository with PostgreSQL", () => {
     const entries = await repository.list("user_integration");
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ title: "Fight Club", status: "want_to_watch" });
+  });
+
+  it("connects a personal Stremio addon, resolves IMDb ids, and marks entries watched idempotently", async () => {
+    await repository.addWork("stremio_user", {
+      provider: "tmdb", externalId: "stremio-550", type: "movie", title: "Fight Club",
+      originalTitle: "Fight Club", releaseYear: "1999", synopsis: "Fixture", posterUrl: "https://example.com/poster.jpg",
+    });
+    const integration = new DrizzleStremioIntegration(db, async () => "tt0137523");
+    const connection = await integration.connect("stremio_user", "https://api.watchlater.example/path");
+    const token = new URL(connection.installUrl).pathname.split("/")[2];
+
+    expect(token).toHaveLength(43);
+    expect(await integration.status("stremio_user")).toMatchObject({ connected: true });
+    expect(await integration.catalog(token, "want_to_watch")).toEqual([{
+      id: "tt0137523", type: "movie", name: "Fight Club", poster: "https://example.com/poster.jpg",
+      releaseInfo: "1999", description: "Fixture",
+    }]);
+    expect((await db.select().from(externalWorkIds)).some((id) => id.provider === "imdb" && id.externalId === "tt0137523")).toBe(true);
+
+    expect((await integration.action(token, "tt0137523"))?.status).toBe("want_to_watch");
+    await integration.markWatched(token, "tt0137523");
+    await integration.markWatched(token, "tt0137523");
+    expect((await integration.action(token, "tt0137523"))?.status).toBe("watched");
+
+    expect(await integration.disconnect("stremio_user")).toBe(true);
+    expect(await integration.isAuthorized(token)).toBe(false);
+    expect(await db.select().from(stremioConnections)).toHaveLength(0);
   });
 
   it("preserves status priority and orders each group by newest addition", async () => {

@@ -4,6 +4,14 @@ import { AniListCatalog, TmdbCatalog, type CatalogMetadata } from "../src/catalo
 afterEach(() => vi.restoreAllMocks());
 
 describe("catalog adapters", () => {
+  it("resolves the IMDb id used by Stremio from TMDB", async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request) => new Response(JSON.stringify({ imdb_id: "tt0137523" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new TmdbCatalog("token").imdbId({ externalId: "550", type: "movie" })).resolves.toBe("tt0137523");
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/movie/550/external_ids");
+  });
+
   it("maps TMDB TV results without treating them as movies", async () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request) => new Response(JSON.stringify({ results: [{ id: 1399, name: "Game of Thrones", original_name: "Game of Thrones", first_air_date: "2011-04-17", overview: "Sete reinos disputam o poder.", poster_path: "/poster.jpg" }] }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

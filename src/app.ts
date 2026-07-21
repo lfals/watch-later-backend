@@ -8,10 +8,20 @@ import type { CatalogWork } from "./catalog.js";
 import { logError, logEvent, logWarn, withLogContext } from "./logger.js";
 import type { AdminStore } from "./admin.js";
 import { cors } from "hono/cors";
+import type { Context } from "hono";
 import { swaggerUI } from "@hono/swagger-ui";
 import { registerPublicOpenApi } from "./openapi.js";
 import { randomUUID } from "node:crypto";
 import { mobileErrorSchema, recordMobileError } from "./mobile-error.js";
+import {
+  parseStremioSkip,
+  stremioCatalogStatus,
+  stremioManifest,
+  type StremioAction,
+  type StremioIntegration,
+} from "./stremio.js";
+
+type SubmissionOutcome = "accepted" | "already_exists" | "cache_hit" | "waiting_for_quota";
 
 type Repository = {
   addMovie(userId: string, movie: CatalogMovie): Promise<unknown>;
@@ -31,13 +41,31 @@ type Repository = {
 const movieSchema = z.object({ externalId: z.string(), title: z.string(), originalTitle: z.string().nullable(), releaseYear: z.string().nullable(), synopsis: z.string().nullable(), posterUrl: z.string().nullable() });
 const catalogWorkSchema = movieSchema.extend({ provider: z.literal("tmdb"), type: z.enum(["movie", "series"]) });
 
-export function createApp(deps: { config: Config; catalog: Catalog; repository: Repository; queue?: SubmissionQueue; admin?: Pick<AdminStore, "role" | "logs" | "submissions" | "submission" | "artifact" | "health" | "audit" | "audits" | "prepareReprocess" | "cache" | "invalidateCache" | "quotas" | "updateGlobalQuotas" | "updateUserQuotas"> }) {
+const validStremioToken = (token: string) => /^[A-Za-z0-9_-]{43}$/.test(token);
+const validImdbId = (id: string) => /^tt\d+$/.test(id);
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+})[character]!);
+const stremioActionPage = (item: StremioAction, completed = false) => `<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>Watchlater</title><style>
+:root{color-scheme:dark}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#11131a;color:#f7f7fb;font:16px system-ui,sans-serif}.card{width:min(88vw,420px);padding:32px;border:1px solid #303443;border-radius:20px;background:#1a1d27;box-shadow:0 24px 70px #0008}h1{font-size:25px;margin:0 0 10px}p{color:#b9bdca;line-height:1.5}button{width:100%;margin-top:14px;padding:14px 18px;border:0;border-radius:12px;background:#8b5cf6;color:white;font:inherit;font-weight:700;cursor:pointer}.done{color:#86efac;font-weight:700}
+</style></head><body><main class="card"><p>Watchlater</p><h1>${escapeHtml(item.title)}</h1>${completed
+  ? '<p class="done">Marcado como visto.</p><p>Você já pode fechar esta janela e voltar ao Stremio.</p>'
+  : item.status === "watched"
+    ? '<p class="done">Este filme já está marcado como visto.</p>'
+    : '<p>Confirme para mover este filme para a lista de vistos no Watchlater.</p><form method="post"><button type="submit">Marcar como visto</button></form>'}
+</main></body></html>`;
+
+export function createApp(deps: { config: Config; catalog: Catalog; repository: Repository; queue?: SubmissionQueue; stremio?: StremioIntegration; admin?: Pick<AdminStore, "role" | "logs" | "submissions" | "submission" | "artifact" | "health" | "audit" | "audits" | "prepareReprocess" | "cache" | "invalidateCache" | "quotas" | "updateGlobalQuotas" | "updateUserQuotas"> }) {
   const app = new OpenAPIHono<{ Variables: AuthVariables }>();
   const mobileErrorWindows = new Map<string, { startedAt: number; count: number }>();
   app.use("*", async (c, next) => {
     const requestId = c.req.header("x-request-id")?.slice(0, 100) || randomUUID();
     c.header("x-request-id", requestId);
-    const path = c.req.path.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, ":id");
+    const path = c.req.path
+      .replace(/\/stremio\/[^/]+/, "/stremio/:token")
+      .replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, ":id");
     const routineProbe = path === "/health";
     const startedAt = performance.now();
     return withLogContext({ requestId }, async () => {
@@ -68,9 +96,86 @@ export function createApp(deps: { config: Config; catalog: Catalog; repository: 
       { name: "Catalog", description: "Movie and series discovery" },
       { name: "Watchlist", description: "The authenticated user's saved works" },
       { name: "Submissions", description: "Instagram Reel identification workflow" },
+      { name: "Integrations", description: "Connections to external media applications" },
     ],
   });
+  app.use("/stremio/*", cors({ origin: "*", allowMethods: ["GET", "POST", "OPTIONS"], maxAge: 600 }));
+  app.get("/stremio/:token/manifest.json", async (c) => {
+    const token = c.req.param("token") ?? "";
+    if (!deps.stremio || !validStremioToken(token) || !await deps.stremio.isAuthorized(token)) return c.json({ error: "not_found" }, 404);
+    c.header("Cache-Control", "private, max-age=60");
+    return c.json(stremioManifest);
+  });
+  const serveStremioCatalog = async (c: Context<{ Variables: AuthVariables }>, type: string, catalogId: string, extra?: string) => {
+    const token = c.req.param("token") ?? "";
+    const status = stremioCatalogStatus(catalogId);
+    if (!deps.stremio || !validStremioToken(token) || type !== "movie" || !status) return c.json({ metas: [] });
+    const metas = await deps.stremio.catalog(token, status, parseStremioSkip(extra));
+    if (metas === null) return c.json({ error: "not_found" }, 404);
+    c.header("Cache-Control", "private, max-age=30, stale-while-revalidate=60");
+    return c.json({ metas });
+  };
+  app.get("/stremio/:token/catalog/*", async (c) => {
+    const match = c.req.path.match(/\/catalog\/([^/]+)\/([^/]+?)(?:\/([^/]+))?\.json$/);
+    if (!match) return c.json({ metas: [] });
+    return serveStremioCatalog(c, decodeURIComponent(match[1]), decodeURIComponent(match[2]), match[3] ? decodeURIComponent(match[3]) : undefined);
+  });
+  app.get("/stremio/:token/stream/*", async (c) => {
+    const match = c.req.path.match(/\/stream\/([^/]+)\/(tt\d+)\.json$/);
+    if (!match) return c.json({ streams: [] });
+    const token = c.req.param("token");
+    const type = decodeURIComponent(match[1]);
+    const imdbId = match[2];
+    if (!deps.stremio || !validStremioToken(token) || type !== "movie" || !validImdbId(imdbId)) return c.json({ streams: [] });
+    const item = await deps.stremio.action(token, imdbId);
+    if (!item) return c.json({ streams: [] });
+    c.header("Cache-Control", "no-store");
+    if (item.status === "watched") return c.json({ streams: [] });
+    const publicBaseUrl = new URL(c.req.url).origin;
+    return c.json({ streams: [{
+      name: "Watchlater",
+      description: "Marcar como visto no Watchlater",
+      externalUrl: `${publicBaseUrl}/stremio/${token}/action/watched/${imdbId}`,
+    }] });
+  });
+  app.get("/stremio/:token/action/watched/:imdbId", async (c) => {
+    const { token, imdbId } = c.req.param();
+    if (!deps.stremio || !validStremioToken(token) || !validImdbId(imdbId)) return c.notFound();
+    const item = await deps.stremio.action(token, imdbId);
+    if (!item) return c.notFound();
+    return c.html(stremioActionPage(item), 200, {
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+    });
+  });
+  app.post("/stremio/:token/action/watched/:imdbId", async (c) => {
+    const { token, imdbId } = c.req.param();
+    if (!deps.stremio || !validStremioToken(token) || !validImdbId(imdbId)) return c.notFound();
+    const item = await deps.stremio.markWatched(token, imdbId);
+    if (!item) return c.notFound();
+    return c.html(stremioActionPage(item, true), 200, {
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+    });
+  });
   app.use("/v1/*", authMiddleware(deps.config));
+  app.get("/v1/integrations/stremio", async (c) => {
+    if (!deps.stremio) return c.json({ error: "integration_unavailable" }, 503);
+    return c.json(await deps.stremio.status(c.get("clerkUserId")));
+  });
+  app.post("/v1/integrations/stremio", async (c) => {
+    if (!deps.stremio) return c.json({ error: "integration_unavailable" }, 503);
+    return c.json(await deps.stremio.connect(c.get("clerkUserId"), new URL(c.req.url).origin), 201);
+  });
+  app.delete("/v1/integrations/stremio", async (c) => {
+    if (!deps.stremio) return c.json({ error: "integration_unavailable" }, 503);
+    await deps.stremio.disconnect(c.get("clerkUserId"));
+    return c.body(null, 204);
+  });
   app.post("/v1/client-errors", async (c) => {
     const parsed = mobileErrorSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "invalid_client_error" }, 422);
@@ -199,11 +304,12 @@ export function createApp(deps: { config: Config; catalog: Catalog; repository: 
   app.post("/v1/submissions", async (c) => {
     const body = await c.req.json<{ url?: string }>();
     try {
-      const item = await deps.repository.createSubmission(c.get("clerkUserId"), normalizeInstagramReel(body.url ?? "")) as { id: string; normalizedUrlHash: string; cacheHit?: boolean; shouldEnqueue?: boolean };
+      const creation = await deps.repository.createSubmission(c.get("clerkUserId"), normalizeInstagramReel(body.url ?? "")) as { id: string; normalizedUrlHash: string; cacheHit?: boolean; shouldEnqueue?: boolean; outcome?: SubmissionOutcome };
+      const { outcome = "accepted", ...item } = creation;
       logEvent("submission.persisted", { submissionId: item.id, hasSharedText: Boolean(body.url), sharedTextLength: body.url?.length ?? 0 });
       if (item.shouldEnqueue !== false && !item.cacheHit) await deps.queue?.enqueue(item.id, item.normalizedUrlHash);
       logEvent("submission.accepted", { submissionId: item.id });
-      return c.json({ item }, 202);
+      return c.json({ item, outcome }, 202);
     } catch (error) {
       if (error instanceof Error && ["invalid_reel_url", "unsupported_url"].includes(error.message)) {
         logEvent("submission.rejected", { reason: error.message, hasSharedText: Boolean(body.url), sharedTextLength: body.url?.length ?? 0 });

@@ -7,6 +7,12 @@ const movie: CatalogWork = { provider: "tmdb", type: "movie", externalId: "550",
 const config = { PORT: 3000, DATABASE_URL: "test", REDIS_URL: "redis://localhost:6379", GEMINI_MODEL: "gemini-3.5-flash", CLERK_AUTHORIZED_PARTIES: "", ALLOW_DEV_AUTH: "true" as const, ADMIN_CLERK_USER_IDS: "", ADMIN_ORIGINS: "http://localhost:5173", SCRAPER_ENABLED: "true" as const, SCRAPER_BROWSER_FALLBACK: "true" as const, SCRAPER_YTDLP_FALLBACK: "true" as const, IDENTIFICATION_PIPELINE_VERSION: "v1", IDENTIFICATION_CACHE_TTL_DAYS: 180, TEMPORARY_MEDIA_RETENTION_DAYS: 7 };
 
 describe("manual watchlist slice", () => {
+  it("requires an authorized Clerk party outside development auth", () => {
+    expect(() => loadConfig({ DATABASE_URL: "test", ALLOW_DEV_AUTH: "false", CLERK_AUTHORIZED_PARTIES: "" })).toThrow();
+    expect(loadConfig({ DATABASE_URL: "test" }).CLERK_AUTHORIZED_PARTIES)
+      .toContain("chrome-extension://flhdhfkcdekjplgdjojflifnioleggok");
+  });
+
   it("allows the production admin origin by default", async () => {
     const productionConfig = loadConfig({ DATABASE_URL: "test" });
     const app = createApp({ config: productionConfig, catalog: { searchMovies: async () => [], search: async () => [], streaming: async () => ({ region: "BR", checkedAt: "", providers: [] }) }, repository: { addMovie: async () => ({}), list: async () => [], createSubmission: async () => ({}), inbox: async () => [], addWork: async () => ({}) } });
@@ -40,6 +46,13 @@ describe("manual watchlist slice", () => {
     ]));
     expect(Object.keys(contract.paths).some((path) => path.startsWith("/v1/admin"))).toBe(false);
     expect(contract.components?.securitySchemes).toHaveProperty("Bearer");
+    const submissionResponse = (contract.paths["/v1/submissions"] as {
+      post: { responses: { "202": { content: { "application/json": { schema: { properties: Record<string, unknown> } } } } } };
+    }).post.responses["202"].content["application/json"].schema;
+    expect(submissionResponse.properties.outcome).toEqual({
+      type: "string",
+      enum: ["accepted", "already_exists", "cache_hit", "waiting_for_quota"],
+    });
   });
 
   it("searches and saves a movie for an authenticated development user", async () => {
@@ -84,14 +97,47 @@ describe("manual watchlist slice", () => {
 
   it("normalizes a shared Reel and rejects unsupported links", async () => {
     const app = createApp({ config, catalog: { searchMovies: async () => [], search: async () => [], streaming: async () => ({ region: "BR", checkedAt: "", providers: [] }) }, repository: {
-      addMovie: async () => ({}), list: async () => [], inbox: async () => [], createSubmission: async (_user, reel) => reel, addWork: async () => ({}),
+      addMovie: async () => ({}), list: async () => [], inbox: async () => [], createSubmission: async (_user, reel) => ({ ...reel, outcome: "accepted" as const }), addWork: async () => ({}),
     }});
     const headers = { "x-dev-user-id": "user_test", "content-type": "application/json" };
     const accepted = await app.request("/v1/submissions", { method: "POST", headers, body: JSON.stringify({ url: "Veja https://www.instagram.com/reel/ABC123/?igsh=x" }) });
     expect(accepted.status).toBe(202);
-    expect((await accepted.json()).item.normalizedUrl).toBe("https://www.instagram.com/reel/ABC123/");
+    expect(await accepted.json()).toMatchObject({
+      outcome: "accepted",
+      item: { normalizedUrl: "https://www.instagram.com/reel/ABC123/" },
+    });
     const rejected = await app.request("/v1/submissions", { method: "POST", headers, body: JSON.stringify({ url: "https://youtube.com/shorts/x" }) });
     expect(rejected.status).toBe(422);
+  });
+
+  it.each([
+    ["accepted", { cacheHit: false, shouldEnqueue: true }, 1],
+    ["already_exists", { cacheHit: false, shouldEnqueue: false }, 0],
+    ["cache_hit", { cacheHit: true, shouldEnqueue: false }, 0],
+    ["waiting_for_quota", { cacheHit: false, shouldEnqueue: false }, 0],
+  ] as const)("returns the %s submission outcome without changing item", async (outcome, flags, expectedEnqueues) => {
+    const enqueued: string[] = [];
+    const app = createApp({
+      config,
+      catalog: { searchMovies: async () => [], search: async () => [], streaming: async () => ({ region: "BR", checkedAt: "", providers: [] }) },
+      repository: {
+        addMovie: async () => ({}), list: async () => [], inbox: async () => [], addWork: async () => ({}),
+        createSubmission: async (_user, reel) => ({ id: "submission-1", ...reel, normalizedUrlHash: "hash-1", outcome, ...flags }),
+      },
+      queue: { enqueue: async (id) => { enqueued.push(id); } },
+    });
+
+    const response = await app.request("/v1/submissions", {
+      method: "POST",
+      headers: { "x-dev-user-id": "user_test", "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://www.instagram.com/reel/OUTCOME123/" }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(202);
+    expect(body).toMatchObject({ outcome, item: { id: "submission-1", ...flags } });
+    expect(body.item).not.toHaveProperty("outcome");
+    expect(enqueued).toHaveLength(expectedEnqueues);
   });
 
   it("keeps anime outside the MVP public catalog contract", async () => {
@@ -154,5 +200,62 @@ describe("manual watchlist slice", () => {
     expect((await app.request("/v1/watchlist/entry-1", { method: "DELETE", headers })).status).toBe(204);
     expect((await app.request("/v1/submissions/sub-1/reprocess", { method: "POST", headers })).status).toBe(202);
     expect(calls).toEqual(["confirm", "watched", "remove", "reprocess"]);
+  });
+
+  it("serves a personal Stremio catalog and requires confirmation before marking a movie watched", async () => {
+    const token = "a".repeat(43);
+    const marked: string[] = [];
+    const catalogRequests: Array<{ status: string; skip?: number }> = [];
+    const stremio = {
+      connect: async (_user: string, baseUrl: string) => ({ installUrl: `${baseUrl}/stremio/${token}/manifest.json`, connectedAt: "2026-07-21T12:00:00.000Z" }),
+      status: async () => ({ connected: true, connectedAt: "2026-07-21T12:00:00.000Z" }),
+      disconnect: async () => true,
+      isAuthorized: async (candidate: string) => candidate === token,
+      catalog: async (_token: string, status: "want_to_watch" | "watching" | "watched", skip?: number) => {
+        catalogRequests.push({ status, skip });
+        return [{ id: "tt0137523", type: "movie" as const, name: "Fight Club", releaseInfo: "1999" }];
+      },
+      action: async (_token: string, imdbId: string) => imdbId === "tt0137523" ? ({ entryId: "entry-1", imdbId, title: "Fight Club", status: "want_to_watch" as const }) : null,
+      markWatched: async (_token: string, imdbId: string) => {
+        marked.push(imdbId);
+        return { entryId: "entry-1", imdbId, title: "Fight Club", status: "watched" as const };
+      },
+    };
+    const app = createApp({ config, stremio, catalog: {
+      searchMovies: async () => [], search: async () => [], streaming: async () => ({ region: "BR", checkedAt: "", providers: [] }),
+    }, repository: {
+      addMovie: async () => ({}), addWork: async () => ({}), list: async () => [], inbox: async () => [], createSubmission: async () => ({}),
+    }});
+    const auth = { "x-dev-user-id": "stremio-user" };
+
+    const connection = await app.request("/v1/integrations/stremio", { method: "POST", headers: auth });
+    expect(connection.status).toBe(201);
+    expect(await connection.json()).toMatchObject({ installUrl: `http://localhost/stremio/${token}/manifest.json` });
+
+    const manifest = await app.request(`/stremio/${token}/manifest.json`);
+    expect(manifest.status).toBe(200);
+    expect(manifest.headers.get("access-control-allow-origin")).toBe("*");
+    expect((await manifest.json()).resources).toContain("catalog");
+    expect((await app.request(`/stremio/${"b".repeat(43)}/manifest.json`)).status).toBe(404);
+
+    const catalog = await app.request(`/stremio/${token}/catalog/movie/watchlater-want-to-watch/skip=100.json`);
+    expect(await catalog.json()).toEqual({ metas: [{ id: "tt0137523", type: "movie", name: "Fight Club", releaseInfo: "1999" }] });
+    expect(catalogRequests).toEqual([{ status: "want_to_watch", skip: 100 }]);
+
+    const streams = await app.request(`/stremio/${token}/stream/movie/tt0137523.json`);
+    expect(await streams.json()).toEqual({ streams: [{
+      name: "Watchlater",
+      description: "Marcar como visto no Watchlater",
+      externalUrl: `http://localhost/stremio/${token}/action/watched/tt0137523`,
+    }] });
+    const confirmation = await app.request(`/stremio/${token}/action/watched/tt0137523`);
+    expect(confirmation.status).toBe(200);
+    expect(await confirmation.text()).toContain("Marcar como visto");
+    expect(marked).toEqual([]);
+
+    const completed = await app.request(`/stremio/${token}/action/watched/tt0137523`, { method: "POST" });
+    expect(completed.status).toBe(200);
+    expect(await completed.text()).toContain("Marcado como visto");
+    expect(marked).toEqual(["tt0137523"]);
   });
 });

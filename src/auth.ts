@@ -24,7 +24,7 @@ export function authMiddleware(config: Config): MiddlewareHandler<{ Variables: A
       const payload = await verifyToken(token, {
         jwtKey: config.CLERK_JWT_KEY,
         secretKey: config.CLERK_SECRET_KEY,
-        authorizedParties: config.CLERK_AUTHORIZED_PARTIES.split(",").filter(Boolean),
+        authorizedParties: config.CLERK_AUTHORIZED_PARTIES.split(",").map((party) => party.trim()).filter(Boolean),
       });
       context.set("clerkUserId", payload.sub);
       return next();
